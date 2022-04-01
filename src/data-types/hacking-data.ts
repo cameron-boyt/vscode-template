@@ -1,7 +1,8 @@
 export interface ICycleInfo {
     threads : number;
-    executionTime : number;
     startTime : number;
+    executionTime : number;
+    power : number;
 }
 
 export interface IWeakenCycle {
@@ -10,15 +11,29 @@ export interface IWeakenCycle {
 
 export interface IGrowCycle {
     g : ICycleInfo;
-    w : ICycleInfo;
+    wg : ICycleInfo;
 }
 
 export interface IHackCycle {
-    cycles : number;
     h : ICycleInfo;
     wh : ICycleInfo;
     g : ICycleInfo;
     wg : ICycleInfo;
+}
+
+export interface IBatchInfo {
+    uid : number;
+    linkedEventId : number;
+    processUids : number[];
+    assignee : string;
+    target : string;
+    startingHackLevel : number;
+    type : HackInstruction;
+    levelTimeCutOff : number;
+    reservedStartTime : number;
+    reservedEndTime : number;
+    cycles : number;
+    cycleInfo : IWeakenCycle | IGrowCycle | IHackCycle
 }
 
 export enum HackMode {

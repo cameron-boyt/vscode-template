@@ -5,7 +5,7 @@ const HACK_SCRIPT = "/hacking/single/hack.js";
 const GROW_SCRIPT = "/hacking/single/grow.js";
 const WEAK_SCRIPT = "/hacking/single/weak.js";
 
-/** @param {NS} ns 'ns' namespace parameter. */ 
+/** @param {NS} ns 'ns' namespace parameter. */
 export async function main(ns: NS) : Promise<void> {
 	ns.disableLog("ALL");
 
@@ -39,7 +39,7 @@ export async function main(ns: NS) : Promise<void> {
 
 
         if (Object.keys(threads).length !== 0) {
-            
+
             const moneyWeights = []
             for (const target in threads) { moneyWeights.push({ target: target, money: ns.getServerMaxMoney(target) }); }
 

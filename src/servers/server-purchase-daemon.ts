@@ -92,7 +92,13 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 async function updateData(ns : NS) : Promise<void> {
 	purchasedServers = await runDodgerScript<string[]>(ns, "/servers/dodger/getPurchasedServers.js");
 	serversAtCurrentTier = purchasedServers.filter((server) => ns.getServerMaxRam(server) >= serverPurchaseRam).length;
-	serverPurchaseRam = Math.max(serverPurchaseRam + (serversAtCurrentTier === maxServerCount ? 1 : 0), getMaxAffordableRam(ns));
+	const oldTier = Math.log(serverPurchaseRam) / Math.log(2);
+	serverPurchaseRam = Math.max(serverPurchaseRam * (serversAtCurrentTier === maxServerCount ? 2 : 1), getMaxAffordableRam(ns));
+	const newTier = Math.log(serverPurchaseRam) / Math.log(2);
+
+	if (oldTier !== newTier) {
+		logger.log(`Trying to buy servers at tier: ${newTier}`, { type: MessageType.info });
+	}
 }
 
 /*
@@ -122,6 +128,7 @@ async function tryPurchaseNewServers(ns : NS) : Promise<boolean> {
  */
 async function tryPurchaseServer(ns : NS) : Promise<boolean> {
 	const tier = Math.log(serverPurchaseRam) / Math.log(2);
+	serversAtCurrentTier = purchasedServers.filter((server) => ns.getServerMaxRam(server) >= serverPurchaseRam).length;
 	const hostname = `server-t${`0${tier}`.slice(-2)}-${`0${serversAtCurrentTier + 1}`.slice(-2)}`;
 
 	const result = await runDodgerScript<string[]>(ns, "/servers/dodger/purchaseServer.js", hostname, serverPurchaseRam);
@@ -173,7 +180,11 @@ function getMaxAffordableRam(ns : NS) : number {
  */
 async function doDeleteWorstServer(ns : NS) : Promise<void> {
 	const serverToDelete = getWorstServer(ns);
+	logger.log(`Retiring server: ${serverToDelete}`, { type: MessageType.info });
+	await ns.write("/tmp/delete.txt", "server gonna be gone soon :(");
+	await ns.scp("/tmp/delete.txt", serverToDelete);
 	await doKillServerProcesses(ns, serverToDelete);
+	await ns.asleep(1000);
 	await doDeleteServer(ns, serverToDelete);
 }
 
@@ -183,9 +194,9 @@ async function doDeleteWorstServer(ns : NS) : Promise<void> {
  * @returns Hostname of worst purchased server.
  */
 function getWorstServer(ns : NS) : string {
-	const lowestRAM = purchasedServers.map(x => ns.getServerMaxRam(x)).reduce((a, b) => (a < b ? a : b));
+	const lowestRAM = purchasedServers.map(x => ns.getServerMaxRam(x)).sort((a, b) => a - b)[0];
 	const lowestRAMServers = purchasedServers.filter(x => ns.getServerMaxRam(x) === lowestRAM);
-	const highestNumberServer = lowestRAMServers.reduce((a, b) => (parseInt(a.substring(a.length - 2)) > parseInt(b.substring(b.length - 2)) ? a : b));
+	const highestNumberServer = lowestRAMServers.sort().slice(-1)[0];
 	return highestNumberServer;
 }
 
@@ -213,6 +224,7 @@ async function doDeleteServer(ns : NS, hostname : string) : Promise<void> {
 	const result = await runDodgerScript<boolean>(ns, "/servers/dodger/deleteServer.js", hostname);
 	if (result) {
 		logger.log(`Deleted server: ${hostname}`, { type: MessageType.info });
+		purchasedServers = await runDodgerScript<string[]>(ns, "/servers/dodger/getPurchasedServers.js");
 	} else {
 		logger.log(`Failed to delete server: ${hostname}`, { type: MessageType.fail });
 		throw new Error(`Failed to delete server: ${hostname}`);

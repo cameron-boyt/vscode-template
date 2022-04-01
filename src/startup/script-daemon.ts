@@ -6,6 +6,8 @@ import { readBitnodeMultiplierData } from '/data/read-bitnodemult-data';
 import { runDodgerScript } from '/helpers/dodger-helper';
 import { peekPort, PortNumber } from '/libraries/port-handler';
 import { IStockData } from '/data-types/stock-data';
+import { getPlayerSensibleSkillApproximation } from '/helpers/skill-helper';
+import { Skill } from '/data-types/skill-data';
 
 // Script logger
 let logger : ScriptLogger;
@@ -51,9 +53,15 @@ interface IScriptRun {
 	runs : IScriptCondition[];
 }
 
+interface IScriptBonusArgs {
+	args : (string | number)[];
+	condition : () => boolean;
+}
+
 interface IScriptCondition {
 	args : (string | number)[];
-	conditions: (() => boolean)[];
+	bonusArgs: IScriptBonusArgs[];
+	condition: () => boolean;
 }
 
 /** Array of scripts to run once */
@@ -80,184 +88,214 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 
 	serverLimit = Math.round(25 * multipliers.PurchasedServerLimit);
 
+	const hackingGoal = getPlayerSensibleSkillApproximation(ns, multipliers, Skill.Hacking)
+
 	ns.ps(machine.hostname).filter((x) => x.filename !== ns.getRunningScript().filename).forEach((script) => ns.kill(script.pid));
 	ns.tail();
 
 	singleScripts = [
 		{ name: "/data/data-writer-daemon.js", runs: [
-			{ args: [], conditions: []}
+			{ args: [], bonusArgs: [], condition: () => true }
 		]},
 		{ name : "/startup/file-cleanup.js", runs: [
-			{ args: [], conditions: []}
+			{ args: [], bonusArgs: [], condition: () => true }
 		]}
 	];
 
 	repeatScripts = [
 		{ name: "/sleeves/sleeve-daemon.js", runs: [
-			{ args: ["--gang", 1, "--stock", 2, "--money", 3], conditions: [
-				() => { return machine.ram.max >= 32 },
-				() => { return player.karma > -54000 },
-				() => { return !player.hasCorp }
-			]},
-			{ args: ["--gang", 1, "--stock", 2, "--money", 3, "--shock", 0, "--wild"], conditions: [
-				() => { return machine.ram.max >= 32 },
-				() => { return player.karma > -54000 },
-				() => { return player.hasCorp }
-			]},
-			{ args: ["--train", 1, "--pill", 2, "--stock", 3, "--money", 4], conditions: [
-				() => { return machine.ram.max >= 32 },
-				() => { return player.karma <= -54000 },
-				() => { return !player.hasCorp }
-			]},
-			{ args: ["--train", 1, "--pill", 2, "--stock", 3, "--money", 4, "--shock", 0, "--wild"], conditions: [
-				() => { return machine.ram.max >= 32 },
-				() => { return player.karma <= -54000 },
-				() => { return player.hasCorp }
-			]}
+			{
+				args: ["--stock", 6, "--money", 7],
+				bonusArgs: [
+					{ args: ["--gang", 1], condition: () => player.bitnodeN !== 2 },
+					{ args: ["--train", 2, "--pill", 3, "--shock", 0, "--wild"], condition: () => player.hasCorp }
+				],
+				condition: () => (
+					machine.ram.max >= 32
+				)
+			}
 		]},
 		{ name: "/singularity/task-daemon.js", runs: [
-			{ args: [], conditions: [
-				() => { return machine.ram.max >= 32 }
-			]}
+			{
+				args: [],
+				bonusArgs: [],
+				condition: () => machine.ram.max >= 32
+			}
 		]},
 		{ name: "/singularity/crime-committer.js", runs: [
-			{ args: ["--money"], conditions: [
-				() => { return player.bitnodeN !== 8; },
-				() => { return machine.ram.max >= 32 && machine.ram.max < 64 }
-			]},
-			{ args: ["--karma", "--goal", 100], conditions: [
-				() => { return player.bitnodeN === 2 },
-				() => { return machine.ram.max >= 64 },
-				() => { return player.karma > -100 }
-			]},
-			{ args: ["--karma", "--goal", 54000], conditions: [
-				() => { return player.bitnodeN !== 2 },
-				() => { return machine.ram.max >= 64 },
-				() => { return player.karma > -54000 }
-			]}
+			{
+				args: ["--money"],
+				bonusArgs: [],
+				condition: () => (
+					player.bitnodeN !== 8 &&
+					machine.ram.max >= 32 &&
+					machine.ram.max < 64
+				)
+			},
+			{
+				args: ["--karma", "--goal", 100],
+				bonusArgs: [],
+				condition: () => (
+					player.bitnodeN === 2 &&
+					machine.ram.max >= 64 &&
+					player.karma > -100
+				)
+			},
+			{
+				args: ["--karma", "--goal", 54000],
+				bonusArgs: [],
+				condition: () => (
+					player.bitnodeN !== 2 &&
+					machine.ram.max >= 64 &&
+					player.karma > -54000
+				)
+			}
 		]},
 		{ name: "/coding-contracts/contract-solver-daemon.js", runs: [
-			{ args: [], conditions: [
-				() => { return machine.ram.max >= 64 }
-			]}
+			{
+				args: [],
+				bonusArgs: [],
+				condition: () => machine.ram.max >= 64
+			}
 		]},
 		{ name: "/stock-market/stock-market-daemon.js", runs: [
-			{ args: [], conditions: [
-				() => { return machine.ram.max >= 64 },
-				() => { return player.stocks.hasWSE },
-				() => {
-					const stockData = peekPort<IStockData>(ns, PortNumber.StockData);
-					return (
-						player.money >= 250e6 ||
-						(
-							stockData
-								? stockData.stocks.some((stock) => stock.longPos.shares > 0 || stock.shortPos.shares > 0)
-								: false
-						)
-					);
-				}
-			]}
+			{
+				args: [],
+				bonusArgs: [],
+				condition: () => (
+					machine.ram.max >= 64 &&
+					player.stocks.hasWSE &&
+					(function() {
+						const stockData = peekPort<IStockData>(ns, PortNumber.StockData);
+						return (
+							player.money >= 100e6 ||
+							(stockData ? stockData.stocks.some((stock) => stock.longPos.shares > 0 || stock.shortPos.shares > 0) : false)
+						);
+					})()
+				)
+			}
 		]},
 		{ name: "/hacknet/hashnet-server-daemon.js", runs: [
-			{ args: ["--hash-improve", "--hash-bladeburner", "--hash-corp"], conditions: [
-				() => { return player.bitnodeN !== 8; },
-				() => { return machine.ram.max >= 64 },
-				() => { return multipliers.HacknetNodeMoney >= 0.25 },
-				() => { return !player.hasCorp }
-			]},
-			{ args: ["--hash-no-money", "--hash-improve", "--hash-bladeburner", "--hash-corp", "--wild"], conditions: [
-				() => { return player.bitnodeN !== 8; },
-				() => { return machine.ram.max >= 64 },
-				() => { return multipliers.HacknetNodeMoney >= 0.25 },
-				() => { return player.hasCorp }
-			]}
+			{
+				args: ["--hash-improve", "--hash-hacking", "--hash-bladeburner", "--hash-corp"],
+				bonusArgs: [
+					{ args: ["--hash-no-money", "--wild"], condition: () => player.hasCorp }
+				],
+				condition: () => (
+					player.bitnodeN !== 8 &&
+					machine.ram.max >= 64 &&
+					multipliers.HacknetNodeMoney >= 0.1
+				)
+			}
 		]},
 		{ name: "/singularity/backdoor-daemon.js", runs: [
-			{ args: ["--all-servers"], conditions: [
-				() => { return machine.ram.max >= 128 }
-			]}
+			{
+				args: ["--all-servers"],
+				bonusArgs: [],
+				condition: () => machine.ram.max >= 128
+			}
 		]},
 		{ name: "/bladeburner/bladeburner-daemon.js", runs: [
-			{ args: [], conditions: [
-				() => { return player.bitnodeN !== 8; },
-				() => { return machine.ram.max >= 128 },
-				() => { return player.karma <= -54000 },
-				() => { return player.stats.agility >= 100 },
-				() => { return player.stats.defense >= 100 },
-				() => { return player.stats.dexterity >= 100 },
-				() => { return player.stats.strength >= 100 }
-			]}
+			{
+				args: [],
+				bonusArgs: [],
+				condition: () => (
+					machine.ram.max >= 128 &&
+					player.karma <= -54000 &&
+					player.bitnodeN !== 8 &&
+					(
+						ns.getPlayer().inBladeburner ||
+						(
+							player.stats.agility >= 100 &&
+							player.stats.defense >= 100 &&
+							player.stats.dexterity >= 100 &&
+							player.stats.strength >= 100
+						)
+					)
+				)
+			}
 		]},
 		{ name: "/gangs/gang-daemon.js", runs: [
-			{ args: [], conditions: [
-				() => { return machine.ram.max >= 64 },
-				() => { return (player.bitnodeN === 2 && player.karma < -100) || player.karma <= -54000 },
-				() => { return !player.hasCorp }
-			]},
-			{ args: ["--wild"], conditions: [
-				() => { return machine.ram.max >= 64 },
-				() => { return (player.bitnodeN === 2 && player.karma < -100) || player.karma <= -54000 },
-				() => { return player.hasCorp }
-			]}
+			{
+				args: [],
+				bonusArgs: [
+					{ args: ["--wild"], condition: () => player.hasCorp }
+				],
+				condition: () => (
+					machine.ram.max >= 64 &&
+					((player.bitnodeN === 2 && player.karma < -100) || player.karma <= -54000)
+				)
+			}
 		]},
 		{ name: "/corporation/corporation-daemon.js", runs: [
-			{ args: [], conditions: [
-				() => { return machine.ram.max >= 2048 },
-				() => { return multipliers.CorporationValuation >= 0.25 },
-				() => { return player.hasCorp || player.money >= 300e9 }
-			]}
+			{
+				args: [],
+				bonusArgs: [],
+				condition: () => (
+					machine.ram.max >= 2048 &&
+					multipliers.CorporationValuation >= 0.25 &&
+					(player.hasCorp || player.money >= 300e9)
+				)
+			}
 		]},
 		{ name: "/staneks-gift/charge-daemon.js", runs: [
-			{ args: [], conditions: [
-				() => { return false }
-			]}
+			{
+				args: [],
+				bonusArgs: [],
+				condition: () => false
+			}
 		]},
 		{ name: "/servers/server-purchase-daemon.js", runs: [
-			{ args: [], conditions: [
-				() => { return serverLimit > 0 },
-				() => { return machine.ram.max >= 128 },
-				() => { return player.money >= 500e6 },
-				() => { return !player.hasCorp }
-			]},
-			{ args: ["--wild"], conditions: [
-				() => { return serverLimit > 0 },
-				() => { return machine.ram.max >= 128 },
-				() => { return player.hasCorp }
-			]}
+			{
+				args: [],
+				bonusArgs: [
+					{ args: ["--wild"], condition: () => player.hasCorp }
+				],
+				condition: () => (
+					serverLimit > 0 &&
+					machine.ram.max >= 128 &&
+					player.money >= 25e6
+				)
+			}
 		]},
 		{ name: "/singularity/ascension-daemon.js", runs: [
-			{ args: [], conditions: [
-				() => { return machine.ram.max >= 2048 },
-				() => {
-					const totalWorth = peekPort<number>(ns, PortNumber.StockWorth);
-					return (!totalWorth || totalWorth < 1e12);
-				}
-			]},
-			{ args: ["--purchase"], conditions: [
-				() => { return machine.ram.max >= 2048 },
-				() => {
-					const totalWorth = peekPort<number>(ns, PortNumber.StockWorth);
-					if (totalWorth) {
-						return totalWorth >= 1e12;
-					} else {
-						return false;
-					}
-				}
-			]}
+			{
+				args: [],
+				bonusArgs: [
+					{ args: ["--purchase"], condition: () => {
+						const totalWorth = peekPort<number>(ns, PortNumber.StockWorth);
+						return (totalWorth ? totalWorth < 1e12 : false);
+					}}
+				],
+				condition: () => machine.ram.max >= 2048
+			}
 		]},
 		{ name: "/hacking/hack-daemon.js", runs: [
-			{ args: ["--normal-mode"], conditions: [
-				() => { return player.bitnodeN !== 8; },
-				() => { return machine.ram.max >= 128 && machine.ram.max < 65536 }
-			]},
-			{ args: ["--xp-farm-mode"], conditions: [
-				() => { return machine.ram.max >= 65536 },
-				() => { return playerAugments.includes("The Red Pill") }
-			]},
-			{ args: ["--stock-mode"], conditions: [
-				() => { return machine.ram.max >= 65536 },
-				() => { return !playerAugments.includes("The Red Pill") }
-			]}
+			{
+				args: [],
+				bonusArgs: [],
+				condition: () => (
+					player.bitnodeN !== 8 &&
+					machine.ram.max >= 128 &&
+					machine.ram.max < 65536
+				)
+			},
+			{
+				args: ["--stock-mode"],
+				bonusArgs: [],
+				condition: () => (
+					machine.ram.max >= 65536 &&
+					hackingGoal < 3000 * multipliers.WorldDaemonDifficulty * 2
+				)
+			},
+			{
+				args: ["--xp-farm-mode"],
+				bonusArgs: [],
+				condition: () => (
+					machine.ram.max >= 65536 &&
+					hackingGoal >= 3000 * multipliers.WorldDaemonDifficulty * 2
+				)
+			}
 		]}
 	];
 }
@@ -342,10 +380,13 @@ async function runScripts(ns : NS) : Promise<void> {
 }
 
 function processScriptRun(ns : NS, script : string, run : IScriptCondition) : void {
-	if (run.conditions.every(x => x())) {
-		tryRunScript(ns, script, run.args);
+	const bonusArgs : (string | number)[] = [];
+	run.bonusArgs.forEach((bonus) => { if (bonus.condition()) bonusArgs.push(...bonus.args) });
+
+	if (run.condition()) {
+		tryRunScript(ns, script, [...run.args, ...bonusArgs]);
 	} else {
-		killOldScriptInstances(ns, script, run.args)
+		killOldScriptInstances(ns, script, [...run.args, ...bonusArgs])
 	}
 }
 

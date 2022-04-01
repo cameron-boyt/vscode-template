@@ -1,10 +1,13 @@
+import { Hash } from 'crypto';
 import { NS } from '../../NetscriptDefinitions'
 import { IBladeburnerData } from '/data-types/bladeburner-data';
 import { ICorpData } from '/data-types/corporation-data'
 import { getActionFromEnum, HashAction, HashUpgrades, IHacknetData, IHashPurchase } from '/data-types/hacknet-data'
+import { getAllServers } from '/helpers/server-helper';
 import { genPlayer, IPlayerObject } from '/libraries/player-factory'
 import { peekPort, PortNumber, purgePort, writeToPort } from '/libraries/port-handler'
 import { MessageType, ScriptLogger } from '/libraries/script-logger.js'
+import { genServer, IServerObject } from '/libraries/server-factory';
 
 // Script logger
 let logger : ScriptLogger;
@@ -25,6 +28,9 @@ const flagSchema : [string, string | number | boolean | string[]][] = [
 	["hash-improve", false],
 	["hash-improve-gym", false],
 	["hash-improve-study", false],
+	["hash-hacking", false],
+	["hash-hacking-money", false],
+	["hash-hacking-security", false],
 	["hash-corp", false],
 	["hash-corp-funds", false],
 	["hash-corp-research", false],
@@ -42,7 +48,9 @@ let wildSpending = false; // Allow purchasing upgrades with all available money
 
 let hashNoMoney = false; // Should hashes NOT be spent on money
 let hashImproveGym = false; // Should hashes be spent on improving gym effectiveness
-let hashImproveStudy = false; // Should hashes be spent on improving study effectiveness
+let hashImproveStudy = false; // Should hashes be spent on improving study
+let hashHackingMoney = false; // Should hashes be spent on increasing server money
+let hashHackingSecurity = false; // Should hashes be spent on reducing server security
 let hashCorpFunds = false; // Should hashes be spent on corporation funds
 let hashCorpResearch = false; // Should hashes be spent on corporation research
 let hashBladeburnerRank = false; // Should hashes be spent on bladeburner rank
@@ -81,6 +89,12 @@ const profitRatioForUpgrades = 0.9;
 /** Maximum time for return of investment upgrades will be purchased for. */
 const returnOfInvestmentThreshold = (3600 * 6); // 6 hours
 
+/** All servers. */
+let servers : IServerObject[];
+
+/** Server to use server hash upgrades on. */
+let hashServerTarget : IServerObject;
+
 /*
  * ------------------------
  * > ENVIRONMENT SETUP FUNCTION
@@ -93,12 +107,15 @@ const returnOfInvestmentThreshold = (3600 * 6); // 6 hours
  */
  function setupEnvironment(ns : NS) : void {
     player = genPlayer(ns);
+    servers = getAllServers(ns).filter(x => x.slice(0, 6) !== "server" && x.slice(0, 7) !== "hacknet").map(x => genServer(ns, x));
 
 	maxCache = ns.formulas.hacknetServers.constants().MaxCache;
 	maxCores = ns.formulas.hacknetServers.constants().MaxCores;
 	maxLevel = ns.formulas.hacknetServers.constants().MaxLevel;
 	maxRam = ns.formulas.hacknetServers.constants().MaxRam;
 	maxServers = ns.formulas.hacknetServers.constants().MaxServers;
+
+	setDesiredHashUpgrades();
 
 	hacknetData = {
 		servers: [],
@@ -167,12 +184,12 @@ async function updateHacknetData(ns : NS) : Promise<void> {
 	logger.log(`Production since last tick: ${ns.nFormat(productionSinceLastTick, '0.000a') + " hashes"} (${ns.nFormat(moneyProductionSinceLastTick, '$0.000a')})`, { type: MessageType.debugLow });
 	logger.log(`Total stored funds: ${ns.nFormat(hacknetData.currentHashes, '0.000a') + " hashes"} (${ns.nFormat(hacknetData.currentFunds, '$0.000a')})`, { type: MessageType.debugLow });
 
+	hashServerTarget = servers.filter((server) => server.isHackableServer).sort((a, b) => b.hackAttractiveness - a.hackAttractiveness)[0];
+
 	hacknetData.lastUpdate = performance.now();
 	hacknetData.refreshPeriod = refreshPeriod;
 	purgePort(ns, PortNumber.HacknetData);
 	await writeToPort<IHacknetData>(ns, PortNumber.HacknetData, hacknetData);
-
-	setDesiredHashUpgrades();
 }
 
 /**
@@ -219,6 +236,8 @@ function setDesiredHashUpgrades() : void {
 	if (hashCorpResearch) desireableUpgrades.push(HashUpgrades.CorpResearch);
 	if (hashBladeburnerRank) desireableUpgrades.push(HashUpgrades.BladeburnerRank);
 	if (hashBladeburnerSkill) desireableUpgrades.push(HashUpgrades.BladeburnerSkill);
+	if (hashHackingMoney) desireableUpgrades.push(HashUpgrades.IncreaseMaxMoney);
+	if (hashHackingSecurity) desireableUpgrades.push(HashUpgrades.ReduceMinSecurity);
 }
 
 /*
@@ -702,7 +721,13 @@ function hashUpgradeRequirementsMet(ns : NS, upgrade : HashUpgrades) : boolean {
 function trySpendHashesOnUpgrade(ns : NS, upgrade : HashUpgrades) : boolean {
 	const oldLevel = ns.hacknet.getHashUpgradeLevel(upgrade);
 	const cost = ns.hacknet.hashCost(upgrade);
-	if (ns.hacknet.spendHashes(upgrade)) {
+
+	const result = ((upgrade === HashUpgrades.IncreaseMaxMoney || upgrade === HashUpgrades.ReduceMinSecurity)
+		? ns.hacknet.spendHashes(upgrade, hashServerTarget.hostname)
+		: ns.hacknet.spendHashes(upgrade)
+	);
+
+	if (result) {
 		logger.log(`Bought Hash Upgrade [${upgrade}] (${oldLevel} >> ${oldLevel + 1})`, { type: MessageType.success, sendToast: true });
 		hacknetData.currentHashes -= cost;
 		return true;
@@ -759,6 +784,8 @@ export async function main(ns : NS) : Promise<void> {
 	hashNoMoney = flags["hash-no-money"];
 	hashImproveGym = flags["hash-improve-gym"]|| flags["hash-improve"];
 	hashImproveStudy = flags["hash-improve-study"]|| flags["hash-improve"];
+	hashHackingMoney = flags["hash-hacking-money"]|| flags["hash-hacking"];
+	hashHackingSecurity = flags["hash-hacking-secutiry"]|| flags["hash-hacking"];
 	hashCorpFunds = flags["hash-corp-funds"] || flags["hash-corp"];
 	hashCorpResearch = flags["hash-corp-research"] || flags["hash-corp"];
 	hashBladeburnerRank = flags["hash-bladeburner-rank"] || flags["hash-bladeburner"];
@@ -786,6 +813,9 @@ export async function main(ns : NS) : Promise<void> {
 			`         --hash-improve           : boolean |>> Enables spending hashes on training improvement upgrades.\n` +
 			`         --hash-improve-gym       : boolean |>> Enables spending hashes on improving gym training.\n` +
 			`         --hash-improve-study     : boolean |>> Enables spending hashes on improving study training.\n` +
+			`         --hash-hacking           : boolean |>> Enables spending hashes on server hacking upgrades.\n` +
+			`         --hash-hacking-money     : boolean |>> Enables spending hashes on increasing server money.\n` +
+			`         --hash-hacking-security  : boolean |>> Enables spending hashes on decreasing server security.\n` +
 			`         --hash-corp              : boolean |>> Enables spending hashes on all corporation upgrades.\n` +
 			`         --hash-corp-funds        : boolean |>> Enables spending hashes on corporation funds.\n` +
 			`         --hash-corp-research     : boolean |>> Enables spending hashes on corporation research points.\n` +

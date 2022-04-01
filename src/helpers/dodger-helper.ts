@@ -82,7 +82,7 @@ export async function runDodgerScriptBulk(ns : NS, scripts : IScriptRun[]) : Pro
 /**
  * Generate a new UID for each provided script run.
  * @param scripts Script runs array.
- * @returns A unique identifier for each script run.
+ * @returns Array of script run request objects, including script UIDs.
  */
 function generateBulkUIDs(scripts : IScriptRun[]) : IScriptRunRequest[] {
     const timeStr = Math.floor(performance.now()).toString();

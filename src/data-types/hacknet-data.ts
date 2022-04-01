@@ -2,8 +2,8 @@
 export enum HashUpgrades {
 	Money = "Sell for Money",
 	CorpFunds = "Sell for Corporation Funds",
-	ReduceMinSec = "Reduce Minimum Security",
-	IncreaseMaxMoney = "Increase Maximumu Money",
+	ReduceMinSecurity = "Reduce Minimum Security",
+	IncreaseMaxMoney = "Increase Maximum Money",
 	ImproveStudy = "Improve Studying",
 	ImproveGym = "Improve Gym Training",
 	CorpResearch = "Exchange for Corporation Research",

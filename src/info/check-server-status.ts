@@ -1,6 +1,6 @@
 import { NS } from '@ns'
-import { genServer } from '../libraries/server-factory.js';
 import { getAllServers } from '/helpers/server-helper.js';
+import { genServer } from '/libraries/server-factory';
 
 /** @param {NS} ns 'ns' namespace parameter. */
 export async function main(ns : NS) : Promise<void> {
@@ -50,7 +50,7 @@ export async function main(ns : NS) : Promise<void> {
 			if (s_str_1.length < sec_len) { s_str_1 = " ".repeat(sec_len - s_str_1.length) + s_str_1; }
 
 			if (s_str_2.length < sec_len) { s_str_2 = s_str_2 + " ".repeat(sec_len - s_str_2.length); }
-			
+
 
 			ns.print(` | ${h_str} ${t_str} ${c_str} | ${g_str} ${m_str_1} / ${m_str_2} | ${w_str} ${s_str_1} / ${s_str_2} |`);
 		}

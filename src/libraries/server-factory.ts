@@ -81,7 +81,7 @@ export function genServer(ns : NS, s : string) : IServerObject {
     const server : IServerObject = {
         get server() { return ns.getServer(s); },
 
-        get hostname() { return ns.getServer(s).hostname; },
+        get hostname() { return s; },
         get organisation() { return ns.getServer(s).organizationName; },
 
         get hasRootAccess() { return ns.getServer(s).hasAdminRights; },
@@ -199,11 +199,11 @@ export function genServer(ns : NS, s : string) : IServerObject {
         },
 
         get isHackingServer() {
-            return server.hasRootAccess && server.ram.max >= 16 && !server.isHacknet;
+            return server.hasRootAccess && server.ram.max > 0 && !server.isHacknet;
         },
 
         get isHackableServer() {
-            return !server.isHome && !server.isPurchased && server.hasRootAccess && (ns.getPlayer().hacking >= server.hackLevel) && server.money.max > 0;
+            return !server.isHome && !server.isPurchased && !server.isHacknet && server.hasRootAccess && (ns.getPlayer().hacking >= server.hackLevel) && server.money.max > 0;
         },
 
         get hackAttractiveness() {

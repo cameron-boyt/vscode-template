@@ -3,9 +3,10 @@ import { IPlayerObject, genPlayer } from '/libraries/player-factory.js';
 import { IServerObject, genServer } from '/libraries/server-factory.js';
 import { peekPort, PortNumber } from '/libraries/port-handler.js';
 import { MessageType, ScriptLogger } from '/libraries/script-logger.js';
-import { HackInstruction, HackMode, IGrowCycle, IHackCycle, IWeakenCycle} from '/data-types/hacking-data.js';
+import { HackInstruction, HackMode, IBatchInfo, IGrowCycle, IHackCycle, IWeakenCycle} from '/data-types/hacking-data.js';
 import { IStockData, symToHostname } from '/data-types/stock-data.js';
 import { getAllServers } from '/helpers/server-helper';
+import { isTypeHackCycle } from '/data-types/type-guards';
 
 // Script logger
 let logger : ScriptLogger;
@@ -18,7 +19,6 @@ const flagSchema : [string, string | number | boolean | string[]][] = [
     ["verbose", false],
     ["d", false],
     ["debug", false],
-    ["normal-mode", false],
     ["stock-mode", false],
     ["xp-farm-mode", false],
     ["share-mode", false],
@@ -27,7 +27,6 @@ const flagSchema : [string, string | number | boolean | string[]][] = [
 let help = false;
 let verbose = false;
 let debug = false;
-let normalMode = false;
 let stockMode = false;
 let xpFarmMode = false;
 let shareMode = false;
@@ -38,17 +37,23 @@ let currentMode = HackMode.Normal;
 let player : IPlayerObject;
 
 // List of files to send to hacking servers
-const REQUIRED_FILES = [
+const requiredFiles = [
     "/hacking/hack-daemon-worker.js",
     "/hacking/single/hack.js", "/hacking/single/grow.js", "/hacking/single/weak.js", "/sharing/share.js",
     "/libraries/script-logger.js", "/libraries/port-handler.js",
     "/libraries/server-factory.js", "/libraries/player-factory.js", "/data-types/hacking-data.js"
 ];
 
+// List of files to kill on startup
+const killScripts = ["/hacking/hack-daemon-worker.js", "/hacking/single/hack.js", "/hacking/single/grow.js", "/hacking/single/weak.js", "/sharing/share.js"];
+
 // Server lists prepared for various hacking scenarios
 let servers : IServerObject[];
-let purchasedServerNames : string[];
 let purchasedServers : IServerObject[];
+
+let targetServers : IServerObject[];
+let hackingServers : IServerObject[];
+
 let serversByHackRating : IServerObject[];
 let serversByStockBenefit : IServerObject[];
 const stockInfluenceMode : { [key : string] : HackInstruction } = {};
@@ -72,10 +77,13 @@ const SHARE_SCRIPT_RAM = 4;
 
 const HACK_FORITFY = 0.002;
 const GROW_FORTIFY = 0.004;
-const WEAKEN_POTENCY = 0.05;
+let WEAKEN_POTENCY = 0.05;
+
+let WEAKENS_PER_GROW = GROW_FORTIFY / WEAKEN_POTENCY;
+let WEAKENS_PER_HACK = HACK_FORITFY / WEAKEN_POTENCY;
 
 const BATCH_DELAY = 2000;
-const STEP_DELAY = BATCH_DELAY / 6;
+const STEP_DELAY = 300;
 const START_DELAY = 500;
 
 const maxHackPercentage = 0.75;
@@ -95,6 +103,9 @@ const queuedGrowEvents : { [key : string] : {
 
 let chargeScriptActive = false;
 
+
+const activeBatches : IBatchInfo[] = [];
+
 /*
  * ------------------------
  * > ENVIRONMENT SETUP FUNCTION
@@ -108,16 +119,26 @@ let chargeScriptActive = false;
 async function setupEnvironment(ns : NS) : Promise<void> {
     player = genPlayer(ns);
     servers = getAllServers(ns).filter(x => x.slice(0, 6) !== "server" && x.slice(0, 7) !== "hacknet").map(x => genServer(ns, x));
-    purchasedServerNames = ns.getPurchasedServers();
-    purchasedServers = purchasedServerNames.map(x => genServer(ns, x));
 
-    for (const server of [...servers, ...purchasedServers]) {
-        await ns.scp(REQUIRED_FILES, server.hostname);
-        assigneeNextAvailability[server.hostname]= 0;
-        targetNextAvailability[server.hostname] = 0;
+    targetServers = servers.filter((server) => server.money.max > 0);
+    targetServers.forEach((target) => targetNextAvailability[target.hostname] = 0);
+
+    purchasedServers = ns.getPurchasedServers().map((server) => genServer(ns, server));
+
+    hackingServers = servers.filter((server) => server.ram.max > 0);
+    for (const server of [...hackingServers, ...purchasedServers]) {
+        ns.ps(server.hostname).filter(x => killScripts.includes(x.filename)).forEach((proc) => ns.kill(proc.pid));
+        await ns.scp(requiredFiles, server.hostname);
+        assigneeNextAvailability[server.hostname] = 0;
         queuedWeakEvents[server.hostname] = [];
         queuedGrowEvents[server.hostname] = [];
     }
+
+
+    WEAKEN_POTENCY = ns.getBitNodeMultipliers().ServerWeakenRate * WEAKEN_POTENCY;
+
+    WEAKENS_PER_GROW = GROW_FORTIFY / WEAKEN_POTENCY;
+    WEAKENS_PER_HACK = HACK_FORITFY / WEAKEN_POTENCY;
 }
 
 /*
@@ -126,6 +147,50 @@ async function setupEnvironment(ns : NS) : Promise<void> {
  * ------------------------
 */
 
+async function checkForPurchasedServerUpdates(ns : NS) : Promise<void> {
+    const purchasedServerNames = ns.getPurchasedServers();
+
+    const oldServerNames = purchasedServers.map((server) => server.hostname).filter((hostname) => !purchasedServerNames.includes(hostname));
+    await processOldServers(oldServerNames);
+
+    const newServerNames = purchasedServerNames.filter((hostname) => !purchasedServers.map((server) => server.hostname).includes(hostname));
+    await processNewServers(ns, newServerNames);
+
+    purchasedServers = purchasedServerNames.map(x => genServer(ns, x));
+}
+
+async function processOldServers(serverNames : string[]) : Promise<void> {
+    for (const server of serverNames) {
+        delete assigneeNextAvailability[server];
+        delete targetNextAvailability[server];
+        delete queuedWeakEvents[server];
+        delete queuedGrowEvents[server];
+
+        const batchesToKill : number[] = [];
+
+        for (let i = 0; i < activeBatches.length; i++) {
+            const batch = activeBatches[i];
+
+            if (batch.assignee === server) {
+                batchesToKill.push(i);
+            }
+        }
+
+        for (const i of batchesToKill.reverse()) {
+            activeBatches.splice(i);
+        }
+    }
+}
+
+async function processNewServers(ns : NS, serverNames : string[]) : Promise<void> {
+    for (const server of serverNames) {
+        await ns.scp(requiredFiles, server);
+        assigneeNextAvailability[server] = 0;
+        queuedWeakEvents[server] = [];
+        queuedGrowEvents[server] = [];
+    }
+}
+
 /**
  * Updates the list of servers for the hacking modes to utilise.
  * @param ns NS object parameter.
@@ -133,36 +198,19 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 async function updateServerLists(ns : NS) : Promise<void> {
     logger.log("Updating server lists", { type: MessageType.debugHigh });
 
-    const oldServers = purchasedServerNames;
-    purchasedServerNames = ns.getPurchasedServers();
+    await checkForPurchasedServerUpdates(ns);
 
-    for (const server of oldServers.filter((s) => !purchasedServerNames.includes(s))) {
-        delete assigneeNextAvailability[server];
-        delete targetNextAvailability[server];
-        delete queuedWeakEvents[server];
-        delete queuedGrowEvents[server];
+    const highRamServerCount = purchasedServers.filter((server) => server.ram.max >= 256).length;
 
-        for (let w of Object.values(queuedWeakEvents)) {
-            w = w.filter((e) => e.assignee !== server);
-        }
-
-        for (let g of Object.values(queuedGrowEvents)) {
-            g = g.filter((e) => e.assignee !== server);
-        }
+    if (highRamServerCount >= 20) {
+        hackingServers = servers.filter((server) => server.isHackingServer && server.ram.max >= 256)
+    } else if (highRamServerCount >= 10) {
+        hackingServers = servers.filter((server) => server.isHackingServer && server.ram.max >= 128)
+    } else {
+        hackingServers = servers.filter((server) => server.isHackingServer && server.ram.max >= 16)
     }
 
-    for (const server of purchasedServerNames.filter((s) => !oldServers.includes(s))) {
-        await ns.scp(REQUIRED_FILES, server);
-        assigneeNextAvailability[server]= 0;
-        targetNextAvailability[server] = 0;
-        queuedWeakEvents[server] = [];
-        queuedGrowEvents[server] = [];
-    }
-
-    purchasedServers = purchasedServerNames.map(x => genServer(ns, x));
-
-    const hackableServers = servers.filter(x => x.isHackableServer);
-    serversByHackRating = hackableServers.sort((a, b) => b.hackAttractiveness - a.hackAttractiveness);
+    serversByHackRating = targetServers.filter((server) => server.isHackableServer).sort((a, b) => b.hackAttractiveness - a.hackAttractiveness);
     serversByStockBenefit = [];
 
     chargeScriptActive = ns.ps().filter((proc) => proc.filename === "/staneks-gift/charge.daemon.js").length > 0;
@@ -219,7 +267,7 @@ async function updateServerLists(ns : NS) : Promise<void> {
  */
 function tryNukeServers(ns : NS) : void {
     logger.log("Trying to nuke any new servers", { type: MessageType.debugHigh });
-    servers.filter((s) => s.hostname !== "home" && s.hostname.substring(0, 6) !== "server").forEach((s) => {
+    servers.filter((s) => s.hostname !== "home" && s.hostname.substring(0, 6) !== "server" && !s.hasRootAccess).forEach((s) => {
         if (!s.ports.isSSHOpen  && ns.fileExists("BruteSSH.exe"))   { ns.brutessh(s.hostname);  }
         if (!s.ports.isFTPOpen  && ns.fileExists("FTPCrack.exe"))   { ns.ftpcrack(s.hostname);  }
         if (!s.ports.isSMTPOpen && ns.fileExists("RelaySMTP.exe"))  { ns.relaysmtp(s.hostname); }
@@ -235,41 +283,16 @@ function tryNukeServers(ns : NS) : void {
 
 /*
  * ------------------------
- * > SERVER PREPARATION FUNCTION
- * ------------------------
-*/
-
-/**
- * Given a list of servers, prepare them to hack by passing files.
- * @param ns NS object parameter.
- * @param servers List of server objects to prepare.
- */
-async function prepareHackingServers(ns : NS) : Promise<void> {
-    logger.log("Preparing all servers", { type: MessageType.debugHigh });
-    const killScripts = ["/hacking/hack-daemon-worker.js", "/hacking/single/hack.js", "/hacking/single/grow.js", "/hacking/single/weak.js", "/sharing/share.js"];
-    for (const server of [...servers, ...purchasedServers]) {
-        ns.ps(server.hostname).filter(x => killScripts.includes(x.filename)).forEach((proc) => ns.kill(proc.pid));
-        await ns.scp(REQUIRED_FILES, server.hostname);
-        assigneeNextAvailability[server.hostname] = 0;
-        targetNextAvailability[server.hostname] = 0;
-        queuedWeakEvents[server.hostname] = [];
-        queuedGrowEvents[server.hostname] = [];
-    }
-}
-
-/*
- * ------------------------
  * > HACK ORDER CYCLE CALCULATION FUNCTIONS
  * ------------------------
 */
 
 /**
  * Calculate how many weaken threads are required.
- * @param ns NS object parameter.
  * @param targetServer Hostname of the target server.
  * @returns Weaken Cycle information object.
  */
-function calculateWeakenCycles(ns : NS, assignee : IServerObject, targetServer : IServerObject) : IWeakenCycle {
+function calculateWeakenCycles(assignee : IServerObject, targetServer : IServerObject) : IBatchInfo {
     logger.log("Calculating weaken cycles", { type: MessageType.debugHigh });
 
     const weakenThreads = Math.floor(assignee.ram.free / WEAK_SCRIPT_RAM);
@@ -279,13 +302,31 @@ function calculateWeakenCycles(ns : NS, assignee : IServerObject, targetServer :
     const availableTime = targetNextAvailability[targetServer.hostname];
     const weakenAtTime = Math.ceil(Math.max(performance.now() + (weakTime - weakTime), availableTime - weakTime) + (STEP_DELAY * 0));
 
-    return {
-        w: {
-            threads: weakenThreads,
-            executionTime: weakTime,
-            startTime: weakenAtTime
+    const cycleAmount = (weakenThreads > 0 ? 1 : 0);
+
+    const batch : IBatchInfo = {
+        uid: performance.now(),
+        linkedEventId: Infinity,
+        processUids: [],
+        assignee: assignee.hostname,
+        target: targetServer.hostname,
+        startingHackLevel: player.stats.hacking,
+        type: HackInstruction.Weaken,
+        levelTimeCutOff: 0,
+        reservedStartTime: weakenAtTime + weakTime,
+        reservedEndTime: weakenAtTime + weakTime  + STEP_DELAY + (STEP_DELAY * 1 * (cycleAmount - 1)),
+        cycles: cycleAmount,
+        cycleInfo:  {
+            w: {
+                threads: weakenThreads,
+                startTime: weakenAtTime,
+                executionTime: weakTime,
+                power: weakenThreads * WEAKEN_POTENCY
+            }
         }
-    };
+    }
+
+    return batch;
 }
 
 /**
@@ -294,12 +335,13 @@ function calculateWeakenCycles(ns : NS, assignee : IServerObject, targetServer :
  * @param targetServer Hostname of the target server.
  * @returns Grow Cycle information object.
  */
-function calculateGrowCycles(ns : NS, assignee : IServerObject, targetServer : IServerObject) : IGrowCycle {
+function calculateGrowCycles(ns : NS, assignee : IServerObject, targetServer : IServerObject) : IBatchInfo {
     logger.log("Calculating grow cycles", { type: MessageType.debugHigh });
-    const cycleRAMCost = GROW_SCRIPT_RAM + (WEAK_SCRIPT_RAM * (GROW_FORTIFY / WEAKEN_POTENCY));
+    const cycleRAMCost = GROW_SCRIPT_RAM + (WEAK_SCRIPT_RAM * WEAKENS_PER_GROW);
 
+    // Force at least one weaken thread to be considered
     const growThreads = Math.floor((assignee.ram.free - WEAK_SCRIPT_RAM) / cycleRAMCost);
-    const weakenThreads = Math.ceil(growThreads * GROW_FORTIFY / WEAKEN_POTENCY);
+    const weakenThreads = Math.ceil(growThreads * WEAKENS_PER_GROW);
 
     const growTime = targetServer.growTime.min;
     const weakTime = targetServer.weakenTime.min;
@@ -308,18 +350,37 @@ function calculateGrowCycles(ns : NS, assignee : IServerObject, targetServer : I
     const growAtTime   = Math.ceil(Math.max(performance.now() + (weakTime - growTime), availableTime - growTime) + (STEP_DELAY * 0));
     const weakenAtTime = Math.ceil(Math.max(performance.now() + (weakTime - weakTime), availableTime - weakTime) + (STEP_DELAY * 1));
 
-    return {
-        g: {
-            threads: growThreads,
-            executionTime: growTime,
-            startTime: growAtTime
-        },
-        w: {
-            threads: weakenThreads,
-            executionTime: weakTime,
-            startTime: weakenAtTime
+    const cycleAmount = (growThreads > 0 ? 1 : 0);
+
+    const batch : IBatchInfo = {
+        uid: performance.now(),
+        linkedEventId: Infinity,
+        processUids: [],
+        assignee: assignee.hostname,
+        target: targetServer.hostname,
+        startingHackLevel: player.stats.hacking,
+        type: HackInstruction.Grow,
+        levelTimeCutOff: growAtTime,
+        reservedStartTime: growAtTime + growTime,
+        reservedEndTime: weakenAtTime + weakTime + STEP_DELAY + (STEP_DELAY * 2 * (cycleAmount - 1)),
+        cycles: cycleAmount,
+        cycleInfo:  {
+            g: {
+                threads: growThreads,
+                executionTime: growTime,
+                startTime: growAtTime,
+                power: ns.formulas.hacking.growPercent(targetServer.server, growThreads, player.player, assignee.cores)
+            },
+            wg: {
+                threads: weakenThreads,
+                executionTime: weakTime,
+                startTime: weakenAtTime,
+                power: weakenThreads * WEAKEN_POTENCY
+            }
         }
     }
+
+    return batch;
 }
 
 /**
@@ -328,7 +389,7 @@ function calculateGrowCycles(ns : NS, assignee : IServerObject, targetServer : I
  * @param targetServer Hostname of the target server.
  * @returns Hack Cycle information object.
  */
-function calculateHackCycles(ns : NS, assignee : IServerObject, targetServer : IServerObject) : IHackCycle {
+function calculateHackCycles(ns : NS, assignee : IServerObject, targetServer : IServerObject) : IBatchInfo {
     logger.log("Calculating hack cycles", { type: MessageType.debugHigh });
 
     // Calculate the optimal amount of threads
@@ -348,29 +409,32 @@ function calculateHackCycles(ns : NS, assignee : IServerObject, targetServer : I
     //ns.print(hackPercent)
 
     let adjustments = 0;
+    const maxAdjustments = 10;
 
-    while (minThreads !== maxThreads && adjustments < 25) {
+    let growFrac = 0;
+
+    while (minThreads !== maxThreads && adjustments++ < maxAdjustments) {
 
         // Calculate how much money we plan on stealing, and how many threads that will take
         hackThreads = Math.floor((minThreads + maxThreads) / 2);
-        const hackFrac = hackThreads * ns.hackAnalyze(targetServer.hostname);
-        const totalHackCost = hackThreads * HACK_SCRIPT_RAM;
+        const hackFrac = hackThreads * hackPercent;
 
         // Calculate how many grow threads we need to restore the money we plan on stealing
-        const growFrac = (1 / (1 - hackFrac));
+        growFrac = (1 / (1 - hackFrac));
+        growThreads = Math.ceil((ns.growthAnalyze(targetServer.hostname, growFrac, assignee.cores) * 1.05));
 
         //ns.print(`${assignee.hostname} ${targetServer.hostname} ${growFrac} ${hackFrac} ${hackThreads} ${minThreads} ${maxThreads} ${maxHackPercentage}`);
 
-        growThreads = Math.ceil((ns.growthAnalyze(targetServer.hostname, growFrac, assignee.cores) * 1.05));
-        const totalGrowCost = growThreads * GROW_SCRIPT_RAM;
-
         // Calculate the number of weaken threads we need to counteract the hacks and grows earlier
-        weakHackThreads = Math.ceil(hackThreads * HACK_FORITFY / WEAKEN_POTENCY);
-        weakGrowThreads = Math.ceil(growThreads * GROW_FORTIFY / WEAKEN_POTENCY);
-        const totalWeakenCost = (weakHackThreads + weakGrowThreads) * WEAK_SCRIPT_RAM;
+        weakHackThreads = Math.ceil(hackThreads * WEAKENS_PER_HACK);
+        weakGrowThreads = Math.ceil(growThreads * WEAKENS_PER_GROW);
 
         // Calculate how many cycles we would be able to run at once (hypothetically)
-        const totalCycleCost = totalHackCost + totalGrowCost + totalWeakenCost;
+        const totalCycleCost =
+            (hackThreads * HACK_SCRIPT_RAM) +
+            (growThreads * GROW_SCRIPT_RAM) +
+            ((weakHackThreads + weakGrowThreads) * WEAK_SCRIPT_RAM);
+
         //ns.print(`${minThreads} --> ${maxThreads}`);
         //ns.print(`Free = ${machine.ram.free * ramUsageMult}GB | (${hackThreads}xH + ${growThreads}xG + ${weakHackThreads + weakGrowThreads}xW) = ${totalCycleCost}GB`);
         totalCycles = assignee.ram.free / totalCycleCost;
@@ -381,8 +445,6 @@ function calculateHackCycles(ns : NS, assignee : IServerObject, targetServer : I
         } else if (totalCycles < 1) {
             maxThreads = hackThreads;
         }
-
-        adjustments++;
     }
 
     const hackTime = targetServer.hackTime.min;
@@ -390,34 +452,77 @@ function calculateHackCycles(ns : NS, assignee : IServerObject, targetServer : I
     const weakTime = targetServer.weakenTime.min;
 
     const availableTime = targetNextAvailability[targetServer.hostname];
+
     const hackAtTime    = Math.ceil(Math.max(performance.now() + (weakTime - hackTime), availableTime - hackTime) + (STEP_DELAY * 0));
     const weakenHAtTime = Math.ceil(Math.max(performance.now() + (weakTime - weakTime), availableTime - weakTime) + (STEP_DELAY * 1));
     const growAtTime    = Math.ceil(Math.max(performance.now() + (weakTime - growTime), availableTime - growTime) + (STEP_DELAY * 2));
     const weakenGAtTime = Math.ceil(Math.max(performance.now() + (weakTime - weakTime), availableTime - weakTime) + (STEP_DELAY * 3));
 
-    return {
-        cycles: Math.min(25, Math.floor(totalCycles)),
-        h: {
-            threads: hackThreads,
-            executionTime: hackTime,
-            startTime: hackAtTime
-        },
-        wh: {
-            threads: weakHackThreads,
-            executionTime: weakTime,
-            startTime: weakenHAtTime
-        },
-        g: {
-            threads: growThreads,
-            executionTime: growTime,
-            startTime: growAtTime
-        },
-        wg: {
-            threads: weakGrowThreads,
-            executionTime: weakTime,
-            startTime: weakenGAtTime
+    let cycleAmount = Math.min(25, Math.floor(totalCycles));
+
+    // If any cycle of this batch would overlap a danger period, cut off all cycles from then onwards.
+    for (let i = 0; i < cycleAmount; i++) {
+        const testHackTime = hackAtTime + (STEP_DELAY * 4 * i);
+        const testWeakHTime = weakenHAtTime + (STEP_DELAY * 4 * i);
+        const testGrowTime = growAtTime + (STEP_DELAY * 4 * i);
+        const testWeakGTime = weakenGAtTime + (STEP_DELAY * 4 * i);
+
+        const dangerBatchCount = activeBatches.filter((batch) => (
+            (testHackTime >= batch.reservedStartTime && testHackTime <= batch.reservedEndTime) ||
+            (testWeakHTime >= batch.reservedStartTime && testWeakHTime <= batch.reservedEndTime) ||
+            (testGrowTime >= batch.reservedStartTime && testGrowTime <= batch.reservedEndTime) ||
+            (testWeakGTime >= batch.reservedStartTime && testWeakGTime <= batch.reservedEndTime)
+        )).length;
+
+        if (dangerBatchCount > 0) {
+            logger.log(`Batch for ${assignee.hostname} would overlap reserved time; cutting from ${cycleAmount} cycles to ${i} cycles`, { type: MessageType.warning });
+            cycleAmount = i;
         }
-    };
+    }
+
+    // DELAYS BATCHES BY 50MS UNTIL IT WORKS
+
+    const batch : IBatchInfo = {
+        uid: performance.now(),
+        linkedEventId: Infinity,
+        processUids: [],
+        assignee: assignee.hostname,
+        target: targetServer.hostname,
+        startingHackLevel: player.stats.hacking,
+        type: HackInstruction.Grow,
+        levelTimeCutOff: growAtTime,
+        reservedStartTime: hackAtTime + hackTime - 50,
+        reservedEndTime: weakenGAtTime + weakTime + 50 + (STEP_DELAY * 4 * (cycleAmount - 1)),
+        cycles: cycleAmount,
+        cycleInfo:  {
+            h: {
+                threads: hackThreads,
+                executionTime: hackTime,
+                startTime: hackAtTime,
+                power: hackPercent
+            },
+            wh: {
+                threads: weakHackThreads,
+                executionTime: weakTime,
+                startTime: weakenHAtTime,
+                power: weakHackThreads * WEAKEN_POTENCY
+            },
+            g: {
+                threads: growThreads,
+                executionTime: growTime,
+                startTime: growAtTime,
+                power: growFrac
+            },
+            wg: {
+                threads: weakGrowThreads,
+                executionTime: weakTime,
+                startTime: weakenGAtTime,
+                power: weakGrowThreads * WEAKEN_POTENCY
+            }
+        }
+    }
+
+    return batch;
 }
 
 /*
@@ -456,9 +561,10 @@ function killShareInstances(ns : NS) : void {
 */
 
 async function processOrderAssignments(ns : NS) : Promise<void> {
-    for (const server of [...servers, ...purchasedServers].filter(x => x.isHackingServer && performance.now() > assigneeNextAvailability[x.hostname])) {
+    for (const server of [...hackingServers, ...purchasedServers].filter(x => performance.now() > assigneeNextAvailability[x.hostname])) {
         if (server.hostname === "home" && chargeScriptActive) continue;
-        logger.log(`Processing order assignment for server: ${server.hostname}`, { type: MessageType.info });
+        if (ns.ls(server.hostname, "/tmp/delete.txt").length > 0) continue;
+        logger.log(`Processing order assignment for server: ${server.hostname}`, { type: MessageType.debugHigh });
         await processServerOrderAssignment(ns, server)
     }
 }
@@ -570,11 +676,11 @@ async function tryAssignShareAllOrder(ns : NS, assignee : IServerObject) : Promi
  */
 async function tryAssignWeakenOrder(ns : NS, assignee : IServerObject, target : IServerObject) : Promise<boolean> {
     logger.log("Trying to assign weaken order", { type: MessageType.debugHigh });
-    const weakenCycle = calculateWeakenCycles(ns, assignee, target);
-    if (weakenCycle.w.threads < 1) {
+    const weakenBatch = calculateWeakenCycles(assignee, target);
+    if (weakenBatch.cycles === 0) {
         return false;
     } else {
-        await doAssignWeakenOrder(ns, assignee, target, weakenCycle);
+        await doAssignWeakenOrder(ns, assignee, target, weakenBatch);
         return true;
     }
 }
@@ -585,29 +691,40 @@ async function tryAssignWeakenOrder(ns : NS, assignee : IServerObject, target : 
  * @param cycle Cycle information.
  * @param target Target server to be weakened.
  */
-async function doAssignWeakenOrder(ns : NS, assignee : IServerObject, target : IServerObject, cycle : IWeakenCycle) : Promise<void> {
-    logger.log(`Starting weaken cycle on ${target.hostname} for ${cycle.w.threads} threads`, { type: MessageType.info });
+async function doAssignWeakenOrder(ns : NS, assignee : IServerObject, target : IServerObject, batch : IBatchInfo) : Promise<void> {
+    const cycle = (batch.cycleInfo as IWeakenCycle);
 
-    ns.exec(WEAK_SCRIPT, assignee.hostname, cycle.w.threads, target.hostname, cycle.w.startTime);
+    const formatStartTime = ns.nFormat(Math.max(0, cycle.w.startTime - performance.now()) / 1000, '00:00');
 
-    assigneeNextAvailability[assignee.hostname] = cycle.w.startTime + cycle.w.executionTime + START_DELAY * 2 + BATCH_DELAY * 2;
-    targetNextAvailability[target.hostname] = cycle.w.startTime + cycle.w.executionTime + BATCH_DELAY;
+    logger.log(`${assignee.hostname} to weaken ${target.hostname} by ${ns.nFormat(cycle.w.power, '0.00')} starting in ${formatStartTime}`, { type: MessageType.info });
+    logger.log(`Starting weaken cycle on ${target.hostname} for ${cycle.w.threads} threads`, { type: MessageType.debugLow });
+
+    const weakStart = cycle.w.startTime;
+
+    const weakPID = ns.exec(WEAK_SCRIPT, assignee.hostname, cycle.w.threads, target.hostname, weakStart, false, weakStart + cycle.w.executionTime);
+
+    if (weakPID === 0) {
+        logger.log(`Failed to start: WEAK against ${target.hostname} from ${assignee.hostname}; ${cycle.w.threads} threads`, { type: MessageType.fail, sendToast: true });
+    }
 
     const uid = Math.floor(performance.now());
-    const expiry = cycle.w.startTime + cycle.w.executionTime + BATCH_DELAY;
 
+    // Update batch info
+    batch.uid = uid;
+    batch.processUids.push(weakPID);
+    activeBatches.push(batch);
+
+    // Update active events
     queuedWeakEvents[target.hostname].push({
         uid: uid,
         assignee: assignee.hostname,
-        power: cycle.w.threads * WEAKEN_POTENCY
+        power: cycle.w.power
     });
 
-    setTimeout(() => {
-        if (queuedWeakEvents[target.hostname]) {
-            const index = queuedWeakEvents[target.hostname].findIndex((x) => x.uid === uid);
-            queuedWeakEvents[target.hostname].splice(index);
-        }
-    }, expiry - performance.now());
+    // Update availablity info
+    assigneeNextAvailability[assignee.hostname] = batch.reservedEndTime + BATCH_DELAY;
+    targetNextAvailability[target.hostname] = batch.reservedEndTime + BATCH_DELAY;
+
 }
 
 /**
@@ -620,11 +737,11 @@ async function doAssignWeakenOrder(ns : NS, assignee : IServerObject, target : I
  */
 async function tryAssignGrowOrder(ns : NS, assignee : IServerObject, target : IServerObject, stockInfluence? : HackInstruction) : Promise<boolean> {
     logger.log("Trying to assign grow order", { type: MessageType.debugHigh });
-    const growCycle = calculateGrowCycles(ns, assignee, target);
-    if (growCycle.g.threads < 1) {
+    const growBatch = calculateGrowCycles(ns, assignee, target);
+    if (growBatch.cycles === 0) {
         return false;
     } else {
-        await doAssignGrowOrder(ns, assignee, target, growCycle, stockInfluence === HackInstruction.Grow);
+        await doAssignGrowOrder(ns, assignee, target, growBatch, stockInfluence === HackInstruction.Grow);
         return true;
     }
 }
@@ -636,30 +753,46 @@ async function tryAssignGrowOrder(ns : NS, assignee : IServerObject, target : IS
  * @param target Target server to be grown.
  * @param growInfluence True if this grow instruction should affect the stock market.
  */
- async function doAssignGrowOrder(ns : NS, assignee : IServerObject, target : IServerObject, cycle : IGrowCycle, growInfluence : boolean) : Promise<void> {
-    logger.log(`Starting grow cycle on ${target.hostname} for ${cycle.g.threads} grow threads and ${cycle.w.threads} weaken threads`, { type: MessageType.info });
+ async function doAssignGrowOrder(ns : NS, assignee : IServerObject, target : IServerObject, batch : IBatchInfo, growInfluence : boolean) : Promise<void> {
+    const cycle = (batch.cycleInfo as IGrowCycle);
 
-    ns.exec(GROW_SCRIPT, assignee.hostname, cycle.g.threads, target.hostname, cycle.g.startTime, growInfluence);
-    ns.exec(WEAK_SCRIPT, assignee.hostname, cycle.w.threads, target.hostname, cycle.w.startTime);
+    const formatStartTime = ns.nFormat(Math.max(0, cycle.wg.startTime - performance.now()) / 1000, '00:00');
 
-    assigneeNextAvailability[assignee.hostname] = cycle.w.startTime + cycle.w.executionTime + START_DELAY * 2 + BATCH_DELAY * 2;
-    targetNextAvailability[target.hostname] = cycle.w.startTime + cycle.w.executionTime + BATCH_DELAY;
+    logger.log(`${assignee.hostname} to grow ${target.hostname} by ${ns.nFormat(cycle.g.power, '0.00')}% starting in ${formatStartTime}`, { type: MessageType.info });
+    logger.log(`Starting grow cycle on ${target.hostname} for ${cycle.g.threads} grow threads and ${cycle.wg.threads} weaken threads`, { type: MessageType.debugLow });
+
+    const growStart = cycle.g.startTime;
+    const weakGStart = cycle.wg.startTime;
+
+    const growPID = ns.exec(GROW_SCRIPT, assignee.hostname, cycle.g.threads,  target.hostname, growStart,  growInfluence, growStart + cycle.g.executionTime);
+    const weakPID = ns.exec(WEAK_SCRIPT, assignee.hostname, cycle.wg.threads, target.hostname, weakGStart, false,         weakGStart + cycle.wg.executionTime);
+
+    if (growPID === 0) {
+        logger.log(`Failed to start: GROW against ${target.hostname} from ${assignee.hostname}; ${cycle.g.threads} threads`, { type: MessageType.fail, sendToast: true });
+    }
+
+    if (weakPID === 0) {
+        logger.log(`Failed to start: WEAK against ${target.hostname} from ${assignee.hostname}; ${cycle.wg.threads} threads`, { type: MessageType.fail, sendToast: true });
+    }
 
     const uid = Math.floor(performance.now());
-    const expiry = cycle.w.startTime + cycle.w.executionTime + BATCH_DELAY;
 
+    // Update batch info
+    batch.uid = uid;
+    batch.processUids.push(growPID, weakPID);
+    activeBatches.push(batch);
+
+    // Update active events
     queuedGrowEvents[target.hostname].push({
         uid: uid,
         assignee: assignee.hostname,
-        power: ns.formulas.hacking.growPercent(target.server, cycle.g.threads, player.player, assignee.cores),
+        power: cycle.g.power,
     });
 
-    setTimeout(() => {
-        if (queuedGrowEvents[target.hostname]) {
-            const index = queuedGrowEvents[target.hostname].findIndex((x) => x.uid === uid);
-            queuedGrowEvents[target.hostname].splice(index);
-        }
-    }, expiry - performance.now());
+    // Update availablity info
+    assigneeNextAvailability[assignee.hostname] = batch.reservedEndTime + BATCH_DELAY;
+    targetNextAvailability[target.hostname] = batch.reservedEndTime + BATCH_DELAY;
+
 }
 
 /**
@@ -672,9 +805,9 @@ async function tryAssignGrowOrder(ns : NS, assignee : IServerObject, target : IS
  */
 async function tryAssignHackOrder(ns : NS, assignee : IServerObject, target : IServerObject, stockInfluence? : HackInstruction) : Promise<boolean> {
     logger.log("Trying to assign hack order", { type: MessageType.debugHigh });
-    const hackCycle = calculateHackCycles(ns, assignee, target);
-    if (hackCycle.h.threads <= 0) return false;
-    await doAssignHackOrder(ns, assignee.hostname, hackCycle, target.hostname, stockInfluence === HackInstruction.Grow, stockInfluence === HackInstruction.Hack);
+    const hackBatch = calculateHackCycles(ns, assignee, target);
+    if (hackBatch.cycles === 0) return false;
+    await doAssignHackOrder(ns, assignee.hostname, hackBatch, target.hostname, stockInfluence === HackInstruction.Grow, stockInfluence === HackInstruction.Hack);
     return true;
 }
 
@@ -686,29 +819,144 @@ async function tryAssignHackOrder(ns : NS, assignee : IServerObject, target : IS
  * @param growInfluence True if this grow instruction should affect the stock market.
  * @param hackInfluence True if this hack instruction should affect the stock market.
  */
-async function doAssignHackOrder(ns : NS, assignee : string, cycle : IHackCycle, target : string, growInfluence : boolean, hackInfluence : boolean) : Promise<void> {
-    const percentStolen = (cycle.h.threads * ns.hackAnalyze(target) * 100).toFixed(2);
+async function doAssignHackOrder(ns : NS, assignee : string, batch : IBatchInfo, target : string, growInfluence : boolean, hackInfluence : boolean) : Promise<void> {
+    const cycle = (batch.cycleInfo as IHackCycle);
 
-    logger.log(`Stealing ${percentStolen}% of funds from ${target} for ${cycle.cycles} cycles`, { type: MessageType.info });
-    logger.log(`Hacks = ${cycle.h.threads}, Weakens = ${cycle.wh.threads} Grows = ${cycle.g.threads}, Weakens = ${cycle.wg.threads}`, { type: MessageType.info });
+    const formatPercentStolen = (cycle.h.threads * ns.hackAnalyze(target) * 100).toFixed(2);
+    const formatStartTime = ns.nFormat(Math.max(0, cycle.wh.startTime - performance.now()) / 1000, '00:00');
 
-    for (let i = 0; i < cycle.cycles; i++) {
+    logger.log(`${assignee} to steal ${formatPercentStolen}% of funds from ${target} for ${batch.cycles} cycles starting in ${formatStartTime}`, { type: MessageType.info });
+    logger.log(`Hacks = ${cycle.h.threads}, Weakens = ${cycle.wh.threads} Grows = ${cycle.g.threads}, Weakens = ${cycle.wg.threads}`, { type: MessageType.debugLow });
+
+    const pids : number[] = [];
+
+    for (let i = 0; i < batch.cycles; i++) {
         logger.log(`Executing cycle: ${i}`, { type: MessageType.debugLow });
 
-        ns.exec(HACK_SCRIPT, assignee, cycle.h.threads, target, cycle.h.startTime, hackInfluence);
-        ns.exec(WEAK_SCRIPT, assignee, cycle.wh.threads, target, cycle.wh.startTime);
-        ns.exec(GROW_SCRIPT, assignee, cycle.g.threads, target, cycle.g.startTime, growInfluence);
-        ns.exec(WEAK_SCRIPT, assignee, cycle.wg.threads, target, cycle.wg.startTime);
+        const hackStart = cycle.h.startTime + (STEP_DELAY * 4 * i);
+        const weakHStart = cycle.wh.startTime + (STEP_DELAY * 4 * i);
+        const growStart = cycle.g.startTime + (STEP_DELAY * 4 * i);
+        const weakGStart = cycle.wg.startTime + (STEP_DELAY * 4 * i);
 
-        cycle.h.startTime += BATCH_DELAY;
-        cycle.wh.startTime += BATCH_DELAY;
-        cycle.g.startTime += BATCH_DELAY;
-        cycle.wg.startTime += BATCH_DELAY;
+        const hackPID  = ns.exec(HACK_SCRIPT, assignee, cycle.h.threads,  target, hackStart,  hackInfluence, hackStart + cycle.h.executionTime);
+        const whackPID = ns.exec(WEAK_SCRIPT, assignee, cycle.wh.threads, target, weakHStart, false,         weakHStart + cycle.wh.executionTime);
+        const growPID  = ns.exec(GROW_SCRIPT, assignee, cycle.g.threads,  target, growStart,  growInfluence, growStart + cycle.g.executionTime);
+        const wgrowPID = ns.exec(WEAK_SCRIPT, assignee, cycle.wg.threads, target, weakGStart, false,         weakGStart + cycle.wh.executionTime);
+
+        if (hackPID === 0) {
+            logger.log(`Failed to start: HACK against ${target} from ${assignee}; ${cycle.h.threads} threads`, { type: MessageType.fail, sendToast: true });
+        }
+
+        if (whackPID === 0) {
+            logger.log(`Failed to start: WEAK (hack) against ${target} from ${assignee}; ${cycle.wh.threads} threads`, { type: MessageType.fail, sendToast: true });
+        }
+
+        if (growPID === 0) {
+            logger.log(`Failed to start: GROW against ${target} from ${assignee}; ${cycle.g.threads} threads`, { type: MessageType.fail, sendToast: true });
+        }
+
+        if (wgrowPID === 0) {
+            logger.log(`Failed to start: WEAK (grow) against ${target} from ${assignee}; ${cycle.wg.threads} threads`, { type: MessageType.fail, sendToast: true });
+        }
+
+        pids.push(hackPID, whackPID, growPID, wgrowPID);
+
+        await ns.asleep(1);
     }
 
-    assigneeNextAvailability[assignee] = cycle.wg.startTime + cycle.wg.executionTime + START_DELAY * 2 + BATCH_DELAY * 2;
-    targetNextAvailability[target] = cycle.wg.startTime + cycle.wg.executionTime + BATCH_DELAY;
+    const uid = Math.floor(performance.now());
+
+    // Update batch info
+    batch.uid = uid;
+    batch.processUids = pids;
+    activeBatches.push(batch);
+
+    // Update availablity info
+    assigneeNextAvailability[assignee] = batch.reservedEndTime + BATCH_DELAY;
+    targetNextAvailability[target] = batch.reservedEndTime + BATCH_DELAY;
 }
+
+
+
+async function checkBatchStates(ns : NS) : Promise<void> {
+    const batchesToKill : number[] = [];
+
+    for (let i = 0; i < activeBatches.length; i++) {
+        const batch = activeBatches[i];
+
+        if (batchHasExpired(batch.reservedEndTime)) {
+            logger.log(`Batch ${batch.uid} on ${batch.assignee} successfully completed`, { type: MessageType.debugLow });
+            batchesToKill.push(i);
+        }
+
+        if (batchHasSelfTerminated(ns, batch)) {
+            logger.log(`Killing batch ${batch.uid} on ${batch.assignee} due self-termination`, { type: MessageType.warning });
+            assigneeNextAvailability[batch.assignee] = performance.now();
+            batchesToKill.push(i);
+        }
+
+        if (shouldKillBatch(batch)) {
+            logger.log(`Killing batch ${batch.uid} on ${batch.assignee} due to hack level increase (${batch.startingHackLevel} >> ${player.stats.hacking})`, { type: MessageType.warning });
+            batch.processUids.forEach((uid) => ns.kill(uid, batch.assignee))
+            assigneeNextAvailability[batch.assignee] = performance.now();
+            batchesToKill.push(i);
+        }
+
+        await ns.asleep(1);
+    }
+
+    for (const i of batchesToKill.reverse()) {
+        const batch = activeBatches[i];
+
+        switch (batch.type) {
+            case HackInstruction.Weaken: {
+                const eventIndex = queuedWeakEvents[batch.assignee].findIndex((event) => event.uid === activeBatches[i].uid);
+                if (eventIndex >= 0) queuedWeakEvents[batch.assignee].splice(eventIndex);
+                break;
+            }
+            case HackInstruction.Grow: {
+                const eventIndex = queuedGrowEvents[batch.assignee].findIndex((event) => event.uid === activeBatches[i].uid);
+                if (eventIndex >= 0) queuedGrowEvents[batch.assignee].splice(eventIndex);
+                break;
+            }
+        }
+
+        activeBatches.splice(i);
+    }
+}
+
+function batchHasExpired(endTime : number) : boolean {
+    return performance.now() > endTime;
+}
+
+function batchHasSelfTerminated(ns : NS, batch : IBatchInfo) : boolean {
+    return performance.now() < batch.reservedStartTime && batch.processUids.map(x => ns.getRunningScript(x, batch.assignee)).some(x => x === null)
+}
+
+function shouldKillBatch(batch : IBatchInfo) : boolean {
+    if (performance.now() < batch.levelTimeCutOff && player.stats.hacking > batch.startingHackLevel) {
+        const targetServer = targetServers.find((server) => server.hostname === batch.target);
+        if (!targetServer) return true;
+
+        let timeDifference = 0;
+        switch (batch.type) {
+            case HackInstruction.Hack:
+                timeDifference = Math.max(
+                    (batch.cycleInfo as IHackCycle).h.executionTime - targetServer.hackTime.min,
+                    (batch.cycleInfo as IHackCycle).g.executionTime - targetServer.growTime.min
+                );
+                break;
+            case HackInstruction.Grow:
+                timeDifference = (batch.cycleInfo as IGrowCycle).g.executionTime - targetServer.growTime.min;
+                break;
+        }
+
+        return timeDifference > 200;
+    } else {
+        return false;
+    }
+}
+
 
 /** @param {NS} ns 'ns' namespace parameter. */
 export async function main(ns: NS) : Promise<void> {
@@ -720,7 +968,6 @@ export async function main(ns: NS) : Promise<void> {
 	help = flags.h || flags["help"];
 	verbose = flags.v || flags["verbose"];
 	debug = flags.d || flags["debug"];
-    normalMode = flags["normal-mode"];
     stockMode = flags["stock-mode"];
     xpFarmMode = flags["xp-farm-mode"];
     shareMode = flags["share-mode"];
@@ -728,10 +975,9 @@ export async function main(ns: NS) : Promise<void> {
 	if (verbose) logger.setLogLevel(2);
 	if (debug) 	 logger.setLogLevel(3);
 
-    if (normalMode) currentMode = HackMode.Normal;
-    if (stockMode) currentMode = HackMode.StockMarket;
-    if (xpFarmMode) currentMode = HackMode.XPFarm;
-    if (shareMode) currentMode = HackMode.ShareAll;
+    if (stockMode)  currentMode = HackMode.StockMarket;
+    else if (xpFarmMode) currentMode = HackMode.XPFarm;
+    else if (shareMode)  currentMode = HackMode.ShareAll;
 
 	// Helper output
 	if (help) {
@@ -745,7 +991,6 @@ export async function main(ns: NS) : Promise<void> {
 			`   [--h or help]       : boolean |>> Prints this.\n` +
 			`   [--v or --verbose]  : boolean |>> Sets logging level to 2 - more verbosing logging.\n` +
 			`   [--d or --debug]    : boolean |>> Sets logging level to 3 - even more verbosing logging.\n` +
-			`   [--normal-mode]     : boolean |>> Sets initial mode to Normal hacking mode.\n` +
 			`   [--stock-mode]      : boolean |>> Sets initial mode to Stock Marking influcence mode.\n` +
 			`   [--xp-farm-mode]    : boolean |>> Sets initial mode to XP Farm mode.\n` +
 			`   [--share-mode]      : boolean |>> Sets initial mode to Share all RAM mode.`
@@ -758,14 +1003,13 @@ export async function main(ns: NS) : Promise<void> {
 
 	logger.initialisedMessage(true, false);
 
-    await prepareHackingServers(ns);
-
     while (true) {
 
         await updateServerLists(ns);
         tryNukeServers(ns);
         await processOrderAssignments(ns);
-        await ns.asleep(750);
+        await checkBatchStates(ns);
+        await ns.asleep(1000);
 
     }
 }

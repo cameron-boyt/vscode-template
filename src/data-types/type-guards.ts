@@ -1,4 +1,5 @@
 import { AugmentationStats, Player, PlayerSkills } from '/../NetscriptDefinitions';
+import { IGrowCycle, IHackCycle, IWeakenCycle } from '/data-types/hacking-data';
 
 
 /**
@@ -7,7 +8,7 @@ import { AugmentationStats, Player, PlayerSkills } from '/../NetscriptDefinition
  * @returns True if the object is of type number.
  */
 export function isNumber(u : unknown) : u is number {
-	return (u as number) !== undefined;
+	return (u as number).toFixed !== undefined;
 }
 
 
@@ -36,5 +37,20 @@ export function isPlayerSkills(u : unknown) : u is PlayerSkills {
  * @returns True if the object is of type AugmentationStats.
  */
 export function isTypeAugmentationStats(u : unknown) : u is AugmentationStats {
-	return (u as AugmentationStats) !== undefined;
+	return (u as AugmentationStats).bladeburner_success_chance_mult !== undefined;
+}
+
+
+
+
+export function isTypeHackCycle(u : unknown) : u is IHackCycle {
+    return (u as IHackCycle).h !== undefined;
+}
+
+export function isTypeGrowCycle(u : unknown) : u is IGrowCycle {
+    return (u as IGrowCycle).g !== undefined;
+}
+
+export function isTypeWeakenCycle(u : unknown) : u is IWeakenCycle {
+    return (u as IWeakenCycle).w !== undefined;
 }

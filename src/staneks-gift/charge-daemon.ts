@@ -86,15 +86,12 @@ interface IFragmentPlacement {
 function setupEnvironment(ns : NS) : void {
     player = genPlayer(ns);
     machine = genServer(ns, ns.getHostname());
-
-	player.money;
-	machine.hostname;
 }
 
 async function constructStanekBoard(ns : NS) : Promise<void> {
 	const scripts : IScriptRun[] = [
-		{ script: "/staneks-gift/dodger/height.js", args: [] },
-		{ script: "/staneks-gift/dodger/width.js", args: [] }
+		{ script: "/staneks-gift/dodger/giftHeight.js", args: [] },
+		{ script: "/staneks-gift/dodger/giftWidth.js", args: [] }
 	];
 
 	logger.log("Getting board size");
@@ -443,7 +440,7 @@ export async function main(ns: NS) : Promise<void> {
         for (const frag of ns.stanek.activeFragments().filter(x => x.id < 100)) {
             const threads = Math.floor(machine.ram.free / 2);
 			if (threads > 0) {
-				ns.run("/staneks-gift/charge.js", threads, frag.x, frag.y);
+				ns.run("/staneks-gift/chargeFragment.js", threads, frag.x, frag.y);
 			}
 			await ns.asleep(1250);
         }
