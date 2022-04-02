@@ -66,6 +66,7 @@ export interface IDivision {
 
 export interface ICorpData {
     funds : number;
+    isPublic : boolean;
     divisions : IDivision[];
     refreshPeriod : number;
     lastUpdate : number;

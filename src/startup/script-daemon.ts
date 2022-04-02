@@ -8,6 +8,7 @@ import { peekPort, PortNumber } from '/libraries/port-handler';
 import { IStockData } from '/data-types/stock-data';
 import { getPlayerSensibleSkillApproximation } from '/helpers/skill-helper';
 import { Skill } from '/data-types/skill-data';
+import { ICorpData } from '/data-types/corporation-data';
 
 // Script logger
 let logger : ScriptLogger;
@@ -88,7 +89,16 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 
 	serverLimit = Math.round(25 * multipliers.PurchasedServerLimit);
 
-	const hackingGoal = getPlayerSensibleSkillApproximation(ns, multipliers, Skill.Hacking)
+	const hackingGoal = getPlayerSensibleSkillApproximation(ns, multipliers, Skill.Hacking);
+
+	const hasPublicCorp = function() : boolean {
+		const corpData = peekPort<ICorpData>(ns, PortNumber.CorpData);
+		if (corpData) {
+			return corpData.isPublic;
+		} else {
+			return false;
+		}
+	};
 
 	ns.ps(machine.hostname).filter((x) => x.filename !== ns.getRunningScript().filename).forEach((script) => ns.kill(script.pid));
 	ns.tail();
@@ -108,11 +118,10 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 				args: ["--stock", 6, "--money", 7],
 				bonusArgs: [
 					{ args: ["--gang", 1], condition: () => player.bitnodeN !== 2 },
-					{ args: ["--train", 2, "--pill", 3, "--shock", 0, "--wild"], condition: () => player.hasCorp }
+					{ args: ["--shock", 0, ], condition: () => player.hasCorp },
+					{ args: ["--train", 2, "--pill", 3, "--wild"], condition: () => hasPublicCorp() }
 				],
-				condition: () => (
-					machine.ram.max >= 32
-				)
+				condition: () => machine.ram.max >= 32
 			}
 		]},
 		{ name: "/singularity/task-daemon.js", runs: [
@@ -179,7 +188,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: ["--hash-improve", "--hash-hacking", "--hash-bladeburner", "--hash-corp"],
 				bonusArgs: [
-					{ args: ["--hash-no-money", "--wild"], condition: () => player.hasCorp }
+					{ args: ["--hash-no-money", "--wild"], condition: () => hasPublicCorp() }
 				],
 				condition: () => (
 					player.bitnodeN !== 8 &&
@@ -204,13 +213,10 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 					player.karma <= -54000 &&
 					player.bitnodeN !== 8 &&
 					(
-						ns.getPlayer().inBladeburner ||
-						(
-							player.stats.agility >= 100 &&
-							player.stats.defense >= 100 &&
-							player.stats.dexterity >= 100 &&
-							player.stats.strength >= 100
-						)
+						player.stats.agility >= 100 &&
+						player.stats.defense >= 100 &&
+						player.stats.dexterity >= 100 &&
+						player.stats.strength >= 100
 					)
 				)
 			}
@@ -219,7 +225,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: [],
 				bonusArgs: [
-					{ args: ["--wild"], condition: () => player.hasCorp }
+					{ args: ["--wild"], condition: () => hasPublicCorp() }
 				],
 				condition: () => (
 					machine.ram.max >= 64 &&
@@ -234,7 +240,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 				condition: () => (
 					machine.ram.max >= 2048 &&
 					multipliers.CorporationValuation >= 0.25 &&
-					(player.hasCorp || player.money >= 300e9)
+					(hasPublicCorp() || player.money >= 300e9)
 				)
 			}
 		]},
@@ -249,7 +255,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: [],
 				bonusArgs: [
-					{ args: ["--wild"], condition: () => player.hasCorp }
+					{ args: ["--wild"], condition: () => hasPublicCorp() }
 				],
 				condition: () => (
 					serverLimit > 0 &&
@@ -264,7 +270,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 				bonusArgs: [
 					{ args: ["--purchase"], condition: () => {
 						const totalWorth = peekPort<number>(ns, PortNumber.StockWorth);
-						return (totalWorth ? totalWorth < 1e12 : false);
+						return (totalWorth ? totalWorth >= 1e12 : false);
 					}}
 				],
 				condition: () => machine.ram.max >= 2048

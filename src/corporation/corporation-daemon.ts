@@ -89,6 +89,7 @@ const mainProductionCity = "Aevum";
 
 const corpData : ICorpData = {
     funds: 0,
+    isPublic: false,
     divisions: [],
     refreshPeriod: 0,
     lastUpdate: 0
@@ -212,6 +213,8 @@ async function updateCorpData(ns : NS) : Promise<void> {
             });
         }
     }
+
+    corpData.isPublic = ns.corporation.getCorporation().public;
 
     corpData.lastUpdate = performance.now();
 
