@@ -36,10 +36,12 @@ export async function main(ns : NS) : Promise<void> {
         ns.print(` |────────────────────────────────────────────────────────────────────|`);
 
         const funds = ns.nFormat(data.funds, '0.000a');
+        const isPublic = data.isPublic;
 
-        const fundsStr = `$${" ".repeat(9 - funds.toString().length) + funds}`;
+        const fundsStr = `$${" ".repeat(129 - funds.toString().length) + funds}`;
+        const isPublicStr = isPublic ? "Yes" : "No";
 
-        ns.print(` | [$$$] TOTAL FUNDS: [ ${fundsStr} ]                            [$$$] |`);
+        ns.print(` | [$$$] TOTAL FUNDS: [ ${fundsStr} ]  PUBLIC: [ ${isPublicStr} ]         [$$$] |`);
         ns.print(` ╰───────────────────────────────────────────────────────────────────╯`);
         ns.print(` |   > I N D U S T R I E S < `);
 

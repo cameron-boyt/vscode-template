@@ -117,8 +117,6 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 
 	taskInfo = moreresults[0] as GangTaskStats[];
 	equipmentTypes = moreresults[1] as IGangEquipmentType[];
-
-	purgePort(ns, PortNumber.GangData);
 }
 
 /*

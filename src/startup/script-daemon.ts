@@ -240,7 +240,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 				condition: () => (
 					machine.ram.max >= 2048 &&
 					multipliers.CorporationValuation >= 0.25 &&
-					(hasPublicCorp() || player.money >= 300e9)
+					(player.hasCorp || player.money >= 300e9)
 				)
 			}
 		]},
@@ -270,7 +270,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 				bonusArgs: [
 					{ args: ["--purchase"], condition: () => {
 						const totalWorth = peekPort<number>(ns, PortNumber.StockWorth);
-						return (totalWorth ? totalWorth >= 1e12 : false);
+						return (totalWorth ? totalWorth >= 250e12 : false);
 					}}
 				],
 				condition: () => machine.ram.max >= 2048
@@ -381,7 +381,7 @@ async function runScripts(ns : NS) : Promise<void> {
 			processScriptRun(ns, script.name, run);
 		}
 
-		await ns.asleep(300);
+		await ns.asleep(750);
 	}
 }
 

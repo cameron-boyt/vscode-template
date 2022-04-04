@@ -546,7 +546,7 @@ function generatePurchaseAugmentScripts() : IScriptRun[] {
  * @returns True if augments can be purchased for the sleeve; false otherwise.
  */
 function canPurchaseAugmentsForSleeve(sleeve : ISleeve) : boolean {
-	return sleeve.stats.shock === 0;
+	return sleeve.stats.shock <= 0;
 }
 
 /**

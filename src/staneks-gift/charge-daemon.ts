@@ -121,24 +121,32 @@ async function constructStanekBoard(ns : NS) : Promise<void> {
 	if (crimeMoney) fragmentsToPlace.push(28);
 	if (bladeburnerStats) fragmentsToPlace.push(30);*/
 
-	const board : number[][] = Array(height).fill([]).map((_row) => Array(width).fill(-1));
+	const board : number[][] = Array(height).fill([]).map(() => Array(width).fill(-1));
 	const fragmentsToPlace = ns.stanek.fragmentDefinitions().filter((frag) => fragmentIdsToPlace.includes(frag.id));
 	const boosterFragments = ns.stanek.fragmentDefinitions().filter((frag) => frag.id >= 100);
 
 	for (const frag of ns.stanek.fragmentDefinitions()) {
-		fragmentRotations[frag.id] = [
-			calculateShapeRotation(frag, 0),
-			calculateShapeRotation(frag, 1),
-			calculateShapeRotation(frag, 2),
-			calculateShapeRotation(frag, 3)
-		];
+		fragmentRotations[frag.id] = calculateShapeRotations(frag);
 	}
+
+	/*
+
+	for (let k = 0; k < 4; k++) {
+		for (const a of fragmentRotations[102][k]) {
+			ns.print(a.map((t) => (t ? 'X' : ' ')));
+		}
+		ns.print("");
+	}
+	*/
 
 	logger.log("Pre-construction setup complete");
 
 	await ns.asleep(2000);
 
 	logger.log("Trying to create board");
+
+	ns.print(`${(' X '.repeat(width) + '\n').repeat(height)}`);
+
 	const fragmentPlacements = await tryPlaceFragments(ns, board, 0, [], fragmentsToPlace, boosterFragments);
 	ns.print(fragmentPlacements);
 
@@ -149,6 +157,14 @@ async function constructStanekBoard(ns : NS) : Promise<void> {
 
 	for (const frag of fragmentPlacements) {
 		logger.log(`Trying to place fragment ${frag.fragment.id}`);
+
+		ns.print(`@ ${frag.rootX} ${frag.rootY}`);
+		for (const a of fragmentRotations[frag.fragment.id][frag.rotation]) {
+			ns.print(a.map((t) => (t ? 'X' : ' ')));
+		}
+		ns.print("");
+
+
 		if (ns.stanek.canPlaceFragment(frag.rootX, frag.rootY, frag.rotation, frag.fragment.id)) {
 			logger.log(`ns.stanek.place(${frag.rootX}, ${frag.rootY}, ${frag.rotation}, ${frag.fragment.id});`)
 			await ns.asleep(1000);
@@ -170,18 +186,24 @@ async function constructStanekBoard(ns : NS) : Promise<void> {
  * @param rotation Number of 90 degree clockwise rotations.
  * @returns Rotated shape matrix.
  */
-function calculateShapeRotation(fragment : Fragment, rotation : number) : boolean[][] {
-	rotation = rotation % 4;
+function calculateShapeRotations(fragment : Fragment) : boolean[][][] {
+	const shape1 : boolean[][] = JSON.parse(JSON.stringify(fragment.shape));
+	const shape2 : boolean[][] = JSON.parse(JSON.stringify(fragment.shape));
+	const shape3 : boolean[][] = JSON.parse(JSON.stringify(fragment.shape));
+	const shape4 : boolean[][] = JSON.parse(JSON.stringify(fragment.shape));
 
-	const shape = fragment.shape;
+	const rotations : boolean[][][] = [
+		shape1,
+		rotateMatrix(shape2),
+		rotateMatrix(rotateMatrix(shape3)),
+		rotateMatrix(rotateMatrix(rotateMatrix(shape4))),
+	];
 
-	switch (rotation) {
-		case 0: return shape;
-		case 1: return shape[0].map((_val, index) => shape.map(row => row[index]).reverse());
-		case 2: return shape.map((row) => row.reverse()).reverse();
-		case 3: return shape[0].map((_val, index) => shape.map(row => row[index]).reverse()).map((row) => row.reverse()).reverse();
-		default: return [];
-	}
+	return rotations;
+}
+
+function rotateMatrix(matrix : any[][]) : any[][] {
+	return matrix[0].map((_val, index) => matrix.map(row => row[index]).reverse());
 }
 
 /**
@@ -203,18 +225,22 @@ async function tryPlaceFragments(ns : NS, board : number[][], score : number, pl
 	let bestScore = 0;
 	let bestPlacement = placements;
 
+	ns.print(`depth = ${score}`)
+
 	if (fragmentsToPlace.length > 0) {
 		const frag = fragmentsToPlace.pop() as Fragment;
 		for (let rot = 0; rot <= 3; rot++) {
+			ns.print(rot);
 			const shape = getShapeRotation(frag, rot);
-			const fragHeight = shape.length;
-			const fragWidth = shape[0].length;
-			for (let y = 0; y < board.length - fragHeight; y++) {
-				for (let x = 0; x < board[0].length - fragWidth; x++) {
+			const fragHeight = shape.length - 1;
+			const fragWidth = shape[0].length - 1;
+			for (let y = 1; y < board.length - 1 - fragHeight; y++) {
+				for (let x = 1; x < board[0].length - 1 - fragWidth; x++) {
+					if (shape[0][0] && board[y][x] !== -1) continue;
 					if (mockCanPlace(board, x, y, shape)) {
 						logger.log(`Placing frag ${frag.id} at ${x} ${y}`)
 						const newBoard = doPlaceFragment(board, x, y, shape, frag.id);
-						const deepPlacements = await tryPlaceFragments(ns, newBoard, 0, [...placements, { fragment: frag, rootX: x, rootY: y, rotation: rot }], fragmentsToPlace, boosterFragments);
+						const deepPlacements = await tryPlaceFragments(ns, newBoard, score+1, [...placements, { fragment: frag, rootX: x, rootY: y, rotation: rot }], fragmentsToPlace, boosterFragments);
 						const deepScore = scoreBoard(newBoard, deepPlacements);
 
 						if (deepScore > bestScore) {
@@ -230,14 +256,14 @@ async function tryPlaceFragments(ns : NS, board : number[][], score : number, pl
 		for (const frag of boosterFragments) {
 			for (let rot = 0; rot <= 3; rot++) {
 				const shape = getShapeRotation(frag, rot);
-				const fragHeight = shape.length;
-				const fragWidth = shape[0].length;
+				const fragHeight = shape.length  -1;
+				const fragWidth = shape[0].length - 1;
 				for (let y = 0; y < board.length - fragHeight; y++) {
 					for (let x = 0; x < board[0].length - fragWidth; x++) {
 						if (mockCanPlace(board, x, y, shape) && fragmentTouchesNonBooster(board, x, y, shape)) {
 							logger.log(`Placing frag ${frag.id} at ${x} ${y}`)
 							const newBoard = doPlaceFragment(board, x, y, shape, frag.id);
-							const deepPlacements = await tryPlaceFragments(ns, newBoard, 0, [...placements, { fragment: frag, rootX: x, rootY: y, rotation: rot }], fragmentsToPlace, boosterFragments);
+							const deepPlacements = await tryPlaceFragments(ns, newBoard, score+1, [...placements, { fragment: frag, rootX: x, rootY: y, rotation: rot }], fragmentsToPlace, boosterFragments);
 							const deepScore = scoreBoard(newBoard, deepPlacements);
 
 							if (deepScore > bestScore) {
@@ -263,6 +289,8 @@ async function tryPlaceFragments(ns : NS, board : number[][], score : number, pl
  * @returns
  */
 function scoreBoard(board : number[][], placements : IFragmentPlacement[]) : number {
+	return placements.length;
+
 	return placements.filter((x) => x.fragment.id >= 100).length;
 
 	const fragments = placements.filter((frag) => frag.fragment.id < 100);
@@ -305,41 +333,103 @@ function scoreBoard(board : number[][], placements : IFragmentPlacement[]) : num
 	return score;
 }
 
+function getLargestBlobSize(board : number[][]) : number {
+	const taken : string[] = [];
+
+	let mostFree = 0;
+	for (let y = 0; y < board.length; y++) {
+		for (let x = 0; x < board[0].length; x++) {
+			if (board[y][x] === -1 && !taken.includes(`${x}${y}`)) {
+				const blob = getConnectedFree(board, x, y);
+				taken.push(...blob);
+				mostFree = Math.max(mostFree, blob.length)
+			}
+		}
+	}
+
+	return mostFree;
+
+}
+
+function getConnectedFree(board : number[][], x : number, y : number) : string[] {
+
+	function getConnectedFreeRecursive(x : number, y : number, found : string[]) : string[] {
+		//console.log(`${x} ${y} ${board[y][x]}`);
+		if ((y > 0 						? board[y - 1][x] === -1 : false) && !found.includes(`${x}${y-1}`)) {
+			found.push(`${x}${y-1}`);
+			found = getConnectedFreeRecursive(x, y - 1, found);
+		}
+
+		if ((y < board.length - 1 		? board[y + 1][x] === -1 : false) && !found.includes(`${x}${y+1}`)) {
+			found.push(`${x}${y+1}`);
+			found = getConnectedFreeRecursive(x, y + 1, found);
+		}
+
+		if ((x > 0 						? board[y][x - 1] === -1 : false) && !found.includes(`${x-1}${y}`)) {
+			found.push(`${x-1}${y}`);
+			found = getConnectedFreeRecursive(x - 1, y, found);
+		}
+
+		if ((x < board[0].length - 1 	? board[y][x + 1] === -1 : false) && !found.includes(`${x+1}${y}`)) {
+			found.push(`${x+1}${y}`);
+			found = getConnectedFreeRecursive(x + 1, y, found);
+		}
+
+		return found;
+	}
+
+	const blob = getConnectedFreeRecursive(x, y, [`${x}${y}`]);
+
+	const blobArray = Array(6).fill([]).map(() => Array(6).fill(0));
+
+	for (const b of blob) {
+		blobArray[parseInt(b[1])][parseInt(b[0])] = 1;
+	}
+
+	for (const a of blobArray) {
+		console.log(a);
+	}
+	console.log("---");
+
+	return blob;
+}
+
 function shouldTryPlaceBoosterFragments(board : number[][]) : boolean {
+	//if (getLargestBlobSize(board) < 5) return false;
+
+	let maxBlob = 0;
+
 	for (let y = 0; y < board.length; y++) {
 		for (let x = 0; x < board[0].length; x++) {
 			if (board[y][x] < 100 && board[y][x] !== -1) {
 
-				if (
-					(y > 0 					 ? board[y - 1][x] === -1 : false) ||
-					(y < board.length - 1 	 ? board[y + 1][x] === -1 : false) ||
-					(x > 0 					 ? board[y][x - 1] === -1 : false) ||
-					(x < board[0].length - 1 ? board[y][x + 1] === -1 : false)
-				) return true;
+				if ((y > 0 					 ? board[y - 1][x] === -1 : false)) { maxBlob = Math.max(maxBlob, getConnectedFree(board, x, y-1).length); }
+				if ((y < board.length - 1 	 ? board[y + 1][x] === -1 : false)) { maxBlob = Math.max(maxBlob, getConnectedFree(board, x, y+1).length); }
+				if ((x > 0 					 ? board[y][x - 1] === -1 : false)) { maxBlob = Math.max(maxBlob, getConnectedFree(board, x-1, y).length); }
+				if ((x < board[0].length - 1 ? board[y][x + 1] === -1 : false)) { maxBlob = Math.max(maxBlob, getConnectedFree(board, x+1, y).length); }
+
 
 			}
 		}
 	}
 
-	return false;
+	return maxBlob >= 5;
 }
 
 function fragmentTouchesNonBooster(board : number[][], x : number, y : number, shape : boolean[][]) : boolean {
-	const orig_x = x;
-	for (const row of shape) {
-		for (const col of row) {
-			if (col) {
+	for (let i = 0; i < shape.length; i++) {
+		for (let j = 0; j < shape[0].length; j++) {
+			if (shape[i][j]) {
+				const p = y + i;
+				const q = x + j;
 				if (
-					(y > 0 					 ? board[y - 1][x] !== -1 && board[y - 1][x] < 100 : false) ||
-					(y < board.length - 1 	 ? board[y + 1][x] !== -1 && board[y + 1][x] < 100 : false) ||
-					(x > 0					 ? board[y][x - 1] !== -1 && board[y][x - 1] < 100 : false) ||
-					(x < board[0].length - 1 ? board[y][x + 1] !== -1 && board[y][x + 1] < 100 : false)
+					(p > 0 					 ? board[p - 1][q] !== -1 && board[p - 1][q] < 100 : false) ||
+					(p < board.length - 1 	 ? board[p + 1][q] !== -1 && board[p + 1][q] < 100 : false) ||
+					(q > 0					 ? board[p][q - 1] !== -1 && board[p][q - 1] < 100 : false) ||
+					(q < board[0].length - 1 ? board[p][q + 1] !== -1 && board[p][q + 1] < 100 : false)
 				) return true;
 			}
-			x++;
 		}
-		x = orig_x;
-		y++;
 	}
 
 	return false;
@@ -349,32 +439,22 @@ function mockCanPlace(board : number[][], x : number, y : number, shape : boolea
 	if (y + (shape.length - 1)    >= board.length)    return false;
 	if (x + (shape[0].length - 1) >= board[0].length) return false;
 
-	const orig_x = x;
-	for (const row of shape) {
-		for (const col of row) {
-			if (col && board[y][x] !== -1) return false;
-			x++;
+	for (let i = 0; i < shape.length; i++) {
+		for (let j = 0; j < shape[0].length; j++) {
+			if (shape[i][j] && (board[y + i][x + j] !== -1)) return false;
 		}
-		x = orig_x;
-		y++;
 	}
 
 	return true;
 }
 
-function doPlaceFragment(board : number[][], x : number, y : number, shape : boolean[][], fradId : number) : number[][] {
+function doPlaceFragment(board : number[][], x : number, y : number, shape : boolean[][], fragId : number) : number[][] {
 	const newBoard = JSON.parse(JSON.stringify(board));
 
-	const orig_x = x;
-	for (const row of shape) {
-		for (const col of row) {
-			if (col) {
-				newBoard[y][x] = fradId;
-			}
-			x++;
+	for (let i = 0; i < shape.length; i++) {
+		for (let j = 0; j < shape[0].length; j++) {
+			if (shape[i][j]) newBoard[y + i][x + j] = fragId;
 		}
-		x = orig_x;
-		y++;
 	}
 
 	return newBoard;

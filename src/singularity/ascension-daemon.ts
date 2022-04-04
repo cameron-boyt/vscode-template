@@ -141,7 +141,7 @@ async function updateAugmentBasket(ns : NS) : Promise<IAugmentPurchase[]> {
     const gangFaction = (
         player.bitnodeN === 2
             ? ""
-            : ((gangData) ? gangData.gangInfo.faction : "")
+            : (gangData ? gangData.gangInfo.faction : "")
     );
 
     // Get faction with highest reputation
@@ -179,6 +179,9 @@ async function purchaseAugsAndReset(ns : NS, basket : IAugmentPurchase[]) : Prom
     // Request all stocks be sold
     ns.run("/stock-market/sell-all-stocks.js");
     await ns.asleep(10000);
+
+    ns.tprint("AWAY WE GOOOOOOOOOOOooooooooooooooooooo...........");
+    ns.tprint(basket);
 
     for (const aug of basket) { ns.purchaseAugmentation(aug.faction, aug.augment); }
 

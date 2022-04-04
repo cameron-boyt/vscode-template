@@ -1,5 +1,6 @@
 import { NS } from '@ns'
 import { IScriptRun, IScriptRunRequest } from '/data-types/dodger-data';
+import { ScriptLogger } from '/libraries/script-logger';
 
 /**
  * [RAM DODGER]
@@ -61,7 +62,14 @@ export async function runDodgerScriptBulk(ns : NS, scripts : IScriptRun[]) : Pro
             await ns.asleep(5);
         }
         ns.print(`Creating ${s.uid}`);
-        ns.run(s.script, 1, s.uid, ...s.args)
+        const result = ns.run(s.script, 1, s.uid, ...s.args);
+        if (result <= 0) {
+            ns.print("FAIL | Failed catestrophically");
+            ns.tail();
+            ns.print(s.script);
+            ns.print(s.uid);
+            ns.print(s.args);
+        }
     }
 
     const results : unknown[] = [];

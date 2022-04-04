@@ -1990,6 +1990,22 @@ async function bribeFactions(ns : NS) : Promise<void> {
 }
 
 
+// researhc idk
+
+async function processResearchUpgrades(ns : NS) : Promise<void> {
+    if (!hasOfficeAPI) return;
+    for (const industry of industries.filter(x => hasExpandedToIndustry(ns, x))) {
+        const division = getDivisionNameOfIndustry(ns, industry);
+
+        for (const r of ["Hi-Tech R&D Laboratory", "Market-TA.I", "Market-TA.II",]) {
+            if (!ns.corporation.hasResearched(division, r)) {
+                if (ns.corporation.getDivision(division).research >= ns.corporation.getResearchCost(division, r) * 2) {
+                    ns.corporation.research(division, r)
+                }
+            }
+        }
+    }
+}
 
 
 
@@ -2061,7 +2077,7 @@ export async function main(ns: NS) : Promise<void> {
 
         processCheckForCorporationAPIs(ns);
 
-        //processResearchUpgrades(ns);
+        await processResearchUpgrades(ns);
 
         processOfficeUpgrades(ns);
 

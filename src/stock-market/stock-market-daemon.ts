@@ -246,12 +246,13 @@ async function updateStockInformation(ns : NS) : Promise<void> {
     checkForNewMarketCycle(inversionsDetected);
     checkForSufficientData();
 
-    purgePort(ns, PortNumber.StockWorth);
-    await writeToPort<number>(ns, PortNumber.StockWorth, stockWorth);
 
     hudElement.innerText = ns.nFormat(stockWorth, '$0.000a');
 
     totalWorth = player.money + stockWorth;
+
+    purgePort(ns, PortNumber.StockWorth);
+    await writeToPort<number>(ns, PortNumber.StockWorth, totalWorth);
 
     stockData.currentTick = estTick;
     stockData.lastUpdate = performance.now();

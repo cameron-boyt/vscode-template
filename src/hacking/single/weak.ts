@@ -12,7 +12,8 @@ export async function main(ns: NS) : Promise<void> {
 	}
 
 	// Perform self-termination if out of sync due to some lag
-	if (performance.now() - START_TIME >= 100) {
+	if (Math.abs(performance.now() - START_TIME) >= 100) {
+		ns.print("Missed execution window - terminating.");
 		ns.exit();
 	}
 
