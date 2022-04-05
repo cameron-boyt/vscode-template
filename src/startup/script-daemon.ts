@@ -56,13 +56,13 @@ interface IScriptRun {
 
 interface IScriptBonusArgs {
 	args : (string | number)[];
-	condition : () => boolean;
+	condition : () => Promise<boolean>;
 }
 
 interface IScriptCondition {
 	args : (string | number)[];
 	bonusArgs: IScriptBonusArgs[];
-	condition: () => boolean;
+	condition : () => Promise<boolean>;
 }
 
 /** Array of scripts to run once */
@@ -91,7 +91,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 
 	const hackingGoal = getPlayerSensibleSkillApproximation(ns, multipliers, Skill.Hacking);
 
-	const hasPublicCorp = function() : boolean {
+	const hasPublicCorp = async function() : Promise<boolean> {
 		const corpData = peekPort<ICorpData>(ns, PortNumber.CorpData);
 		if (corpData) {
 			return corpData.isPublic;
@@ -105,10 +105,10 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 
 	singleScripts = [
 		{ name: "/data/data-writer-daemon.js", runs: [
-			{ args: [], bonusArgs: [], condition: () => true }
+			{ args: [], bonusArgs: [], condition: async () => true }
 		]},
 		{ name : "/startup/file-cleanup.js", runs: [
-			{ args: [], bonusArgs: [], condition: () => true }
+			{ args: [], bonusArgs: [], condition: async () => true }
 		]}
 	];
 
@@ -117,25 +117,25 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: ["--stock", 6, "--money", 7],
 				bonusArgs: [
-					{ args: ["--gang", 1], condition: () => player.bitnodeN !== 2 },
-					{ args: ["--shock", 0, ], condition: () => player.hasCorp },
-					{ args: ["--train", 2, "--pill", 3, "--wild"], condition: () => hasPublicCorp() }
+					{ args: ["--gang", 1], condition : async () => player.bitnodeN !== 2 },
+					{ args: ["--shock", 0, ], condition : async () => player.hasCorp },
+					{ args: ["--train", 2, "--pill", 3, "--wild"], condition : () => hasPublicCorp() }
 				],
-				condition: () => machine.ram.max >= 32
+				condition : async () => machine.ram.max >= 32
 			}
 		]},
 		{ name: "/singularity/task-daemon.js", runs: [
 			{
 				args: [],
 				bonusArgs: [],
-				condition: () => machine.ram.max >= 32
+				condition : async () => machine.ram.max >= 32
 			}
 		]},
 		{ name: "/singularity/crime-committer.js", runs: [
 			{
 				args: ["--money"],
 				bonusArgs: [],
-				condition: () => (
+				condition : async () => (
 					player.bitnodeN !== 8 &&
 					machine.ram.max >= 32 &&
 					machine.ram.max < 64
@@ -144,7 +144,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: ["--karma", "--goal", 100],
 				bonusArgs: [],
-				condition: () => (
+				condition : async () => (
 					player.bitnodeN === 2 &&
 					machine.ram.max >= 64 &&
 					player.karma > -100
@@ -153,7 +153,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: ["--karma", "--goal", 54000],
 				bonusArgs: [],
-				condition: () => (
+				condition : async () => (
 					player.bitnodeN !== 2 &&
 					machine.ram.max >= 64 &&
 					player.karma > -54000
@@ -164,14 +164,14 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: [],
 				bonusArgs: [],
-				condition: () => machine.ram.max >= 64
+				condition : async () => machine.ram.max >= 64
 			}
 		]},
 		{ name: "/stock-market/stock-market-daemon.js", runs: [
 			{
 				args: [],
 				bonusArgs: [],
-				condition: () => (
+				condition : async () => (
 					machine.ram.max >= 64 &&
 					player.stocks.hasWSE &&
 					(function() {
@@ -188,9 +188,9 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: ["--hash-improve", "--hash-hacking", "--hash-bladeburner", "--hash-corp"],
 				bonusArgs: [
-					{ args: ["--hash-no-money", "--wild"], condition: () => hasPublicCorp() }
+					{ args: ["--hash-no-money", "--wild"], condition : () => hasPublicCorp() }
 				],
-				condition: () => (
+				condition : async () => (
 					player.bitnodeN !== 8 &&
 					machine.ram.max >= 64 &&
 					multipliers.HacknetNodeMoney >= 0.1
@@ -201,14 +201,14 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: ["--all-servers"],
 				bonusArgs: [],
-				condition: () => machine.ram.max >= 128
+				condition : async () => machine.ram.max >= 128
 			}
 		]},
 		{ name: "/bladeburner/bladeburner-daemon.js", runs: [
 			{
 				args: [],
 				bonusArgs: [],
-				condition: () => (
+				condition : async () => (
 					machine.ram.max >= 128 &&
 					player.karma <= -54000 &&
 					player.bitnodeN !== 8 &&
@@ -225,9 +225,9 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: [],
 				bonusArgs: [
-					{ args: ["--wild"], condition: () => hasPublicCorp() }
+					{ args: ["--wild"], condition : async () => hasPublicCorp() }
 				],
-				condition: () => (
+				condition : async () => (
 					machine.ram.max >= 64 &&
 					((player.bitnodeN === 2 && player.karma < -100) || player.karma <= -54000)
 				)
@@ -237,27 +237,34 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: [],
 				bonusArgs: [],
-				condition: () => (
+				condition : async () => (
 					machine.ram.max >= 2048 &&
 					multipliers.CorporationValuation >= 0.25 &&
 					(player.hasCorp || player.money >= 300e9)
 				)
 			}
 		]},
-		{ name: "/staneks-gift/charge-daemon.js", runs: [
+		/*{ name: "/staneks-gift/gift-constructor-daemon.js", runs: [
 			{
 				args: [],
 				bonusArgs: [],
-				condition: () => false
+				condition : async () => false
+			}
+		]},*/
+		{ name: "/staneks-gift/gift-charger-daemon.js", runs: [
+			{
+				args: [],
+				bonusArgs: [],
+				condition: async () => (await runDodgerScript<unknown[]>(ns, "/staneks-gift/dodger/activeFragments.js")).length > 0
 			}
 		]},
 		{ name: "/servers/server-purchase-daemon.js", runs: [
 			{
 				args: [],
 				bonusArgs: [
-					{ args: ["--wild"], condition: () => hasPublicCorp() }
+					{ args: ["--wild"], condition : async () => hasPublicCorp() }
 				],
-				condition: () => (
+				condition : async () => (
 					serverLimit > 0 &&
 					machine.ram.max >= 128 &&
 					player.money >= 25e6
@@ -268,19 +275,20 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: [],
 				bonusArgs: [
-					{ args: ["--purchase"], condition: () => {
+					{ args: ["--purchase"], condition : async () => {
 						const totalWorth = peekPort<number>(ns, PortNumber.StockWorth);
-						return (totalWorth ? totalWorth >= 250e12 : false);
+						const lastAug = ns.getTimeSinceLastAug();
+						return (totalWorth ? totalWorth >= 1e12 : false) && lastAug >= (1000 * 60 * 10);
 					}}
 				],
-				condition: () => machine.ram.max >= 2048
+				condition : async () => machine.ram.max >= 2048
 			}
 		]},
 		{ name: "/hacking/hack-daemon.js", runs: [
 			{
 				args: [],
 				bonusArgs: [],
-				condition: () => (
+				condition : async () => (
 					player.bitnodeN !== 8 &&
 					machine.ram.max >= 128 &&
 					machine.ram.max < 65536
@@ -289,7 +297,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: ["--stock-mode"],
 				bonusArgs: [],
-				condition: () => (
+				condition : async () => (
 					machine.ram.max >= 65536 &&
 					hackingGoal < 3000 * multipliers.WorldDaemonDifficulty * 2
 				)
@@ -297,27 +305,13 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			{
 				args: ["--xp-farm-mode"],
 				bonusArgs: [],
-				condition: () => (
+				condition : async () => (
 					machine.ram.max >= 65536 &&
 					hackingGoal >= 3000 * multipliers.WorldDaemonDifficulty * 2
 				)
 			}
 		]}
 	];
-}
-
-/*
- * ------------------------
- * > DATA UPDATE FUNCTION
- * ------------------------
-*/
-
-/**
- * Update data for script runtime.
- * @param ns NS object parameter.
- */
-async function updateData(ns : NS) : Promise<void> {
-	playerAugments = await runDodgerScript<string[]>(ns, "/singularity/dodger/getOwnedAugmentations.js");
 }
 
 /*
@@ -378,18 +372,18 @@ function doRunScript(ns : NS, script : string, args : (string | number)[]) : voi
 async function runScripts(ns : NS) : Promise<void> {
 	for (const script of repeatScripts) {
 		for (const run of script.runs) {
-			processScriptRun(ns, script.name, run);
+			await processScriptRun(ns, script.name, run);
 		}
 
 		await ns.asleep(750);
 	}
 }
 
-function processScriptRun(ns : NS, script : string, run : IScriptCondition) : void {
+async function processScriptRun(ns : NS, script : string, run : IScriptCondition) : Promise<void> {
 	const bonusArgs : (string | number)[] = [];
-	run.bonusArgs.forEach((bonus) => { if (bonus.condition()) bonusArgs.push(...bonus.args) });
+	run.bonusArgs.forEach(async (bonus) => { if (await bonus.condition()) bonusArgs.push(...bonus.args) });
 
-	if (run.condition()) {
+	if (await run.condition()) {
 		tryRunScript(ns, script, [...run.args, ...bonusArgs]);
 	} else {
 		killOldScriptInstances(ns, script, [...run.args, ...bonusArgs])
@@ -443,7 +437,6 @@ export async function main(ns: NS) : Promise<void> {
 	await runOneTimeScripts(ns);
 
 	while (true) {
-		await updateData(ns);
 		await runScripts(ns);
 		await ns.asleep(refreshPeriod);
 	}

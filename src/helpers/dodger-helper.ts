@@ -1,6 +1,5 @@
 import { NS } from '@ns'
 import { IScriptRun, IScriptRunRequest } from '/data-types/dodger-data';
-import { ScriptLogger } from '/libraries/script-logger';
 
 /**
  * [RAM DODGER]

@@ -99,9 +99,6 @@ const queuedGrowEvents : { [key : string] : {
     power : number;
 }[]} = {};
 
-let chargeScriptActive = false;
-
-
 const activeBatches : IBatchInfo[] = [];
 
 /*
@@ -216,10 +213,8 @@ async function updateServerLists(ns : NS) : Promise<void> {
         hackingServers = servers.filter((server) => server.isHackingServer && server.ram.max >= 16)
     }
 
-    serversByHackRating = targetServers.filter((server) => server.isHackableServer).sort((a, b) => b.hackAttractiveness - a.hackAttractiveness);
+    serversByHackRating = targetServers.filter((server) => server.isHackableServer && server.weakenTime.min <= (60000 * 8)).sort((a, b) => b.hackAttractiveness - a.hackAttractiveness);
     serversByStockBenefit = [];
-
-    chargeScriptActive = ns.ps().filter((proc) => proc.filename === "/staneks-gift/charge.daemon.js").length > 0;
 
     const stockData = peekPort<IStockData>(ns, PortNumber.StockData);
     if (!stockData) return;
@@ -247,7 +242,7 @@ async function updateServerLists(ns : NS) : Promise<void> {
         const server = servers.find(x => x.hostname === hostname);
         if (!server) continue;
 
-        if (player.stats.hacking >= server.hackLevel && server.hasRootAccess) {
+        if (player.stats.hacking >= server.hackLevel && server.hasRootAccess && server.weakenTime.min <= (60000 * 8)) {
             serversByStockBenefit.push(server);
             stockInfluenceMode[server.hostname] = stock.expectedReturn > 0 ? HackInstruction.Grow : HackInstruction.Hack;
         }
@@ -467,6 +462,8 @@ function calculateHackCycles(ns : NS, assignee : IServerObject, targetServer : I
 
     let cycleAmount = Math.min(25, Math.floor(totalCycles));
 
+    if (hackThreads === 0 || growThreads === 0) cycleAmount = 0;
+
     // If any cycle of this batch would overlap a danger period, cut off all cycles from then onwards.
     for (let i = 0; i < cycleAmount; i++) {
         const totalStepDelay = (STEP_DELAY * 4 * i);
@@ -583,7 +580,6 @@ function killShareInstances(ns : NS) : void {
 
 async function processOrderAssignments(ns : NS) : Promise<void> {
     for (const server of [...hackingServers, ...purchasedServers].filter((server) => server.ram.free >= 5)) {
-        if (server.hostname === "home" && chargeScriptActive) continue;
         if (!ns.serverExists(server.hostname)) continue;
         if (ns.ls(server.hostname, "/tmp/delete.txt").length > 0) continue;
         logger.log(`Processing order assignment for server: ${server.hostname}`, { type: MessageType.debugHigh });
@@ -661,7 +657,8 @@ async function tryAssignStockMarketOrder(ns : NS, assignee : IServerObject) : Pr
         if (assigned) return true;
     }
 
-    const assigned = await tryAssignXPFarmOrder(ns, assignee);
+    let assigned = await tryAssignNormalOrder(ns, assignee);
+    if (!assigned) assigned = await tryAssignXPFarmOrder(ns, assignee);
     return assigned;
 }
 
@@ -831,7 +828,7 @@ async function tryAssignHackOrder(ns : NS, assignee : IServerObject, target : IS
     logger.log("Trying to assign hack order", { type: MessageType.debugHigh });
     const hackBatch = calculateHackCycles(ns, assignee, target);
     if (hackBatch.cycles === 0) return false;
-    if ((hackBatch.cycleInfo as IHackCycle).wh.startTime - performance.now() >= 60000) return false;
+    if ((hackBatch.cycleInfo as IHackCycle).wh.startTime - performance.now() >= 60000 * 2.5) return false;
     await doAssignHackOrder(ns, assignee.hostname, hackBatch, target.hostname, stockInfluence === HackInstruction.Grow, stockInfluence === HackInstruction.Hack);
     return true;
 }
