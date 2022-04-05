@@ -3,12 +3,15 @@ import { genPlayer, IPlayerObject } from '/libraries/player-factory';
 import { genServer, IServerObject } from '/libraries/server-factory';
 import { MessageType, ScriptLogger } from '/libraries/script-logger';
 import { readBitnodeMultiplierData } from '/data/read-bitnodemult-data';
-import { runDodgerScript } from '/helpers/dodger-helper';
+import { runDodgerScript, runDodgerScriptBulk } from '/helpers/dodger-helper';
 import { peekPort, PortNumber } from '/libraries/port-handler';
 import { IStockData } from '/data-types/stock-data';
 import { getPlayerSensibleSkillApproximation } from '/helpers/skill-helper';
 import { Skill } from '/data-types/skill-data';
 import { ICorpData } from '/data-types/corporation-data';
+import { getFreeRam } from '/helpers/server-helper';
+import { IScriptRun } from '/data-types/dodger-data';
+import { IGangData } from '/data-types/gang-data';
 
 // Script logger
 let logger : ScriptLogger;
@@ -49,27 +52,27 @@ let playerAugments : string[] = [];
 /** Purchased server limit. */
 let serverLimit = 0;
 
-interface IScriptRun {
-	name : string;
-	runs : IScriptCondition[];
-}
-
-interface IScriptBonusArgs {
+interface IAutoScriptCondition {
 	args : (string | number)[];
+	bonusArgs: IAutoScriptBonusArgs[];
 	condition : () => Promise<boolean>;
 }
 
-interface IScriptCondition {
+interface IAutoScriptRun {
+	name : string;
+	runs : IAutoScriptCondition[];
+}
+
+interface IAutoScriptBonusArgs {
 	args : (string | number)[];
-	bonusArgs: IScriptBonusArgs[];
 	condition : () => Promise<boolean>;
 }
 
 /** Array of scripts to run once */
-let singleScripts : IScriptRun[] = [];
+let singleScripts : IAutoScriptRun[] = [];
 
 /** Array of scripts to check continuously for heartbeat */
-let repeatScripts : IScriptRun[] = [];
+let repeatScripts : IAutoScriptRun[] = [];
 
 /*
  * ------------------------
@@ -99,6 +102,29 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 			return false;
 		}
 	};
+
+	const playerInGang = async function() : Promise<boolean> {
+		const gangData = peekPort<IGangData>(ns, PortNumber.GangData);
+		if (gangData) {
+			return gangData.lastUpdate >= performance.now() - 60000;
+		} else {
+			return false;
+		}
+	};
+
+	const stanekLargerThan = async function(h : number, w : number) : Promise<boolean> {
+		const scripts : IScriptRun[] = [
+			{ script: "/staneks-gift/dodger/giftHeight.js", args: [] },
+			{ script: "/staneks-gift/dodger/giftWidth.js", args: [] }
+		];
+
+		const results = await runDodgerScriptBulk(ns, scripts);
+
+		const height = results[0] as number;
+		const width = results[1] as number;
+
+		return (height >= h && width >= w) || (width >= h && height >= w);
+	}
 
 	ns.ps(machine.hostname).filter((x) => x.filename !== ns.getRunningScript().filename).forEach((script) => ns.kill(script.pid));
 	ns.tail();
@@ -229,7 +255,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 				],
 				condition : async () => (
 					machine.ram.max >= 64 &&
-					((player.bitnodeN === 2 && player.karma < -100) || player.karma <= -54000)
+					(playerInGang() || (player.bitnodeN === 2 && player.karma < -100) || player.karma <= -54000)
 				)
 			}
 		]},
@@ -244,13 +270,76 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 				)
 			}
 		]},
-		/*{ name: "/staneks-gift/gift-constructor-daemon.js", runs: [
+		{ name: "/staneks-gift/gift-constructor-daemon.js", runs: [
+			// Start of game --- NOT 8
 			{
-				args: [],
+				args: ["--crime-money"],
 				bonusArgs: [],
-				condition : async () => false
+				condition : async () => (
+					player.bitnodeN !== 8 &&
+					!playerInGang() &&
+					stanekLargerThan(2, 3)
+				)
+			},
+			// All game -- ONLY 8
+			{
+				args: ["--hacking-speed"],
+				bonusArgs: [
+					{
+						args: ["--hacking-skill"],
+						condition: async () => stanekLargerThan(4, 4)
+					},
+					{
+						args: ["--hacking-power", "--grow-power"],
+						condition: async () => stanekLargerThan(6, 6)
+					}
+				],
+				condition : async () => (
+					player.bitnodeN === 8 &&
+					stanekLargerThan(2, 3)
+				)
+			},
+			// Post gang-creation -- NOT 6, 7 OR 8 -- HACKING IS GOOD
+			{
+				args: ["--hacking-speed"],
+				bonusArgs: [
+					{
+						args: ["--hacknet-production", "--hacknet-cost"],
+						condition: async () => (
+							multipliers.HacknetNodeMoney >= 0.33 &&
+							stanekLargerThan(4, 5)
+						)
+					},
+					{
+						args: ["--hacking-skill"],
+						condition: async () => stanekLargerThan(5, 5)
+					},
+					{
+						args: ["--hacking-power", "--grow-power"],
+						condition: async () => stanekLargerThan(6, 7)
+					}
+				],
+				condition : async () => (
+					![6, 7, 8].includes(player.bitnodeN) &&
+					stanekLargerThan(2, 3)
+				)
+			},
+			// Post gang-creation -- 6 AND 7
+			{
+				args: ["--bladeburner-stats"],
+				bonusArgs: [
+					{
+						args: ["--hacknet-production", "--hacknet-cost"],
+						condition: async () => stanekLargerThan(5, 5)
+					}
+				],
+				condition : async () => (
+					[6, 7].includes(player.bitnodeN) &&
+					playerInGang() &&
+					stanekLargerThan(2, 3)
+				)
 			}
-		]},*/
+		]},
 		{ name: "/staneks-gift/gift-charger-daemon.js", runs: [
 			{
 				args: [],
@@ -327,7 +416,7 @@ async function setupEnvironment(ns : NS) : Promise<void> {
 async function runOneTimeScripts(ns : NS) : Promise<void> {
 	for (const script of singleScripts) {
 		for (const run of script.runs) {
-			processScriptRun(ns, script.name, run);
+			await processScriptRun(ns, script.name, run);
 		}
 
 		await ns.asleep(300);
@@ -341,7 +430,7 @@ function tryRunScript(ns : NS, script : string, args : (string | number)[]) : vo
 }
 
 function isRamAvailableForScript(ns : NS, script : string) : boolean {
-	if (ns.getServerMaxRam("home") - ns.getServerUsedRam("home") >= ns.getScriptRam(script)) {
+	if (getFreeRam(ns, "home") >= ns.getScriptRam(script)) {
 		logger.log(`Sufficient RAM to start script: ${script}`, { type: MessageType.debugHigh });
 		return true;
 	} else {
@@ -379,9 +468,11 @@ async function runScripts(ns : NS) : Promise<void> {
 	}
 }
 
-async function processScriptRun(ns : NS, script : string, run : IScriptCondition) : Promise<void> {
+async function processScriptRun(ns : NS, script : string, run : IAutoScriptCondition) : Promise<void> {
 	const bonusArgs : (string | number)[] = [];
-	run.bonusArgs.forEach(async (bonus) => { if (await bonus.condition()) bonusArgs.push(...bonus.args) });
+	for (const arg of run.bonusArgs) {
+		if (await arg.condition()) bonusArgs.push(...arg.args);
+	}
 
 	if (await run.condition()) {
 		tryRunScript(ns, script, [...run.args, ...bonusArgs]);

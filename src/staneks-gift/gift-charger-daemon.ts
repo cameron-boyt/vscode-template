@@ -1,6 +1,7 @@
-import { NS } from '@ns'
-import { genServer, IServerObject } from '/libraries/server-factory';
+import { ActiveFragment, NS } from '@ns'
 import { MessageType, ScriptLogger } from '/libraries/script-logger';
+import { runDodgerScript } from '/helpers/dodger-helper';
+import { getFreeRam } from '/helpers/server-helper';
 
 // Script logger
 let logger : ScriptLogger;
@@ -42,8 +43,8 @@ let debug = false; // Log in debug mode
  * > SCRIPT VARIABLES <
 */
 
-/** This machine object */
-let machine : IServerObject;
+/** This machine's hostname */
+let hostname : string;
 
 /* Gift charging script. */
 const CHARGE_SCRIPT = "/staneks-gift/single/chargeFragment.js";
@@ -60,8 +61,8 @@ const CHARGE_SCRIPT_RAM = 2;
  * Set up the environment for this script.
  * @param ns NS object parameter.
  */
-function setupEnvironment(ns : NS) : void {
-    machine = genServer(ns, ns.getHostname());
+async function setupEnvironment(ns : NS) : Promise<void> {
+    hostname = await runDodgerScript<string>(ns, "/servers/dodger/getHostname.js");
 }
 
 /*
@@ -106,20 +107,26 @@ export async function main(ns: NS) : Promise<void> {
 	logger.initialisedMessage(true, false);
 
 	while (true) {
-		if (ns.stanek.activeFragments().length === 0) {
+		const fragments = await runDodgerScript<ActiveFragment[]>(ns, "/staneks-gift/dodger/activeFragments.js");
+		const trueFragments = fragments.filter(x => x.id < 100);
+
+		if (trueFragments.length === 0) {
 			logger.log("No fragments on board - exiting.", { type: MessageType.warning });
 			break;
 		}
 
-        for (const frag of ns.stanek.activeFragments().filter(x => x.id < 100)) {
-            const threads = Math.floor((machine.ram.free / 3) / CHARGE_SCRIPT_RAM);
+		const freeRam = getFreeRam(ns, hostname) * 0.8;
+
+        for (const frag of trueFragments) {
+            const threads = Math.floor((freeRam / trueFragments.length) / CHARGE_SCRIPT_RAM);
 			if (threads > 0) {
 				const result = ns.run(CHARGE_SCRIPT, threads, frag.x, frag.y);
 				if (result === 0) {
 					logger.log(`Failed to charge fragment: ${frag.id}`, { type: MessageType.fail });
 				}
 			}
-			await ns.asleep(refreshPeriod);
         }
+
+		await ns.asleep(refreshPeriod);
 	}
 }

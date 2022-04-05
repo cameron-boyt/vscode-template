@@ -1,6 +1,6 @@
 import { Fragment, NS } from '@ns'
 import { MessageType, ScriptLogger } from '/libraries/script-logger';
-import { runDodgerScript, runDodgerScriptBulk } from '/helpers/dodger-helper';
+import { runDodgerScriptBulk } from '/helpers/dodger-helper';
 import { IScriptRun } from '/data-types/dodger-data';
 import { IBoardLayout, IFragmentPlacement } from '/data-types/staneks-gift-data';
 
@@ -57,17 +57,14 @@ let bladeburnerStats = false; // Place the bladeburner stats fragment
  * > SCRIPT VARIABLES <
 */
 
-/* Gift charge daemon script. */
-const CHARGE_DAEMON_SCRIPT = "/staneks-gift/gift-charger.daemon.js";
-
 /* File where saved boards layouts are stored/ */
 const SAVED_BOARDS_FILE = "/staneks-gift/boards.txt";
 
 /* Array of fragment shape rotations. */
-const fragmentRotations : { [key : number] : boolean[][][] } = [];
+let fragmentRotations : { [key : number] : boolean[][][] } = [];
 
 /* Array of fragments that are to be placed on the board. */
-const fragmentIdsToPlace : number[] = [];
+let fragmentIdsToPlace : number[] = [];
 
 /* Array of saved board configuations. */
 let savedBoards : IBoardLayout[] = [];
@@ -83,9 +80,27 @@ let savedBoards : IBoardLayout[] = [];
  * @param ns NS object parameter.
  */
 function setupEnvironment(ns : NS) : void {
+	fragmentRotations = [];
 	ns.stanek.fragmentDefinitions().forEach(
 		(frag) => fragmentRotations[frag.id] = calculateShapeRotations(frag)
 	);
+
+	fragmentIdsToPlace = [];
+	if (hackingSkill) fragmentIdsToPlace.push(0, 1);
+	if (hackingSpeed) fragmentIdsToPlace.push(5);
+	if (hackingPower) fragmentIdsToPlace.push(6);
+	if (growPower) fragmentIdsToPlace.push(7);
+	if (strengthSkill) fragmentIdsToPlace.push(10);
+	if (defenceSkill) fragmentIdsToPlace.push(12);
+	if (dexteritySkill) fragmentIdsToPlace.push(14);
+	if (agilitySkill) fragmentIdsToPlace.push(16);
+	if (charismaSkill) fragmentIdsToPlace.push(18);
+	if (hacknetProduction) fragmentIdsToPlace.push(20);
+	if (hacknetCost) fragmentIdsToPlace.push(21);
+	if (reputationGain) fragmentIdsToPlace.push(25);
+	if (workMoney) fragmentIdsToPlace.push(27);
+	if (crimeMoney) fragmentIdsToPlace.push(28);
+	if (bladeburnerStats) fragmentIdsToPlace.push(30);
 
 	savedBoards = JSON.parse(ns.read(SAVED_BOARDS_FILE));
 }
@@ -522,6 +537,23 @@ async function placeGiftFragments(ns : NS, fragments : IFragmentPlacement[]) {
 
 	logger.log("Placing new fragments", { type: MessageType.info });
 
+	const canPlace = await checkCanPlaceAllFragments(ns, fragments);
+	if (canPlace) {
+		await doPlaceAllFragments(ns, fragments);
+	} else {
+		logger.log(`Unable to place all fragment`, { type: MessageType.error, sendToast: true });
+	}
+}
+
+/**
+ * Check if all fragments supplied can be placed on the Staneks Gift board.
+ * @param ns NS object.
+ * @param fragments Array of fragment placement objects.
+ * @returns True if all fragments can be placed; false otherwise.
+ */
+async function checkCanPlaceAllFragments(ns : NS, fragments : IFragmentPlacement[]) : Promise<boolean> {
+	const scripts : IScriptRun[] = [];
+
 	for (const frag of fragments) {
 		logger.log(`Fragment ${frag.fragment.id} @ [${frag.rootX}, ${frag.rootY}]`, { type: MessageType.info });
 		for (const a of fragmentRotations[frag.fragment.id][frag.rotation]) {
@@ -529,16 +561,33 @@ async function placeGiftFragments(ns : NS, fragments : IFragmentPlacement[]) {
 		}
 		ns.print("");
 
-		if (ns.stanek.canPlaceFragment(frag.rootX, frag.rootY, frag.rotation, frag.fragment.id)) {
-			await ns.asleep(500);
-			const placed = ns.stanek.placeFragment(frag.rootX, frag.rootY, frag.rotation, frag.fragment.id);
-			if (placed) {
-				logger.log(`Successfully placed fragment ${frag.fragment.id}`, { type: MessageType.success });
-			} else {
-				logger.log(`Unable to place fragment ${frag.fragment.id}`, { type: MessageType.error });
-			}
+		scripts.push({ script: "/staneks-gift/dodger/canPlaceFragment.js", args: [frag.rootX, frag.rootY, frag.rotation, frag.fragment.id] });
+	}
+
+	const results = await runDodgerScriptBulk(ns, scripts);
+
+	return results.every((t) => (t as boolean));
+}
+
+/**
+ * Place all fragments on the Staneks Gift board.
+ * @param ns NS object.
+ * @param fragments Array of fragment placement objects.
+ */
+async function doPlaceAllFragments(ns : NS, fragments : IFragmentPlacement[]) : Promise<void> {
+	const scripts : IScriptRun[] = [];
+
+	for (const frag of fragments) {
+		scripts.push({ script: "/staneks-gift/dodger/placeFragment.js", args: [frag.rootX, frag.rootY, frag.rotation, frag.fragment.id] });
+	}
+
+	const results = await runDodgerScriptBulk(ns, scripts);
+
+	for (let i = 0; i < results.length; i++) {
+		if (results[i]) {
+			logger.log(`Successfully placed fragment ${scripts[i].args[3]}`, { type: MessageType.success });
 		} else {
-			logger.log(`Unable to place fragment ${frag.fragment.id}`, { type: MessageType.error });
+			logger.log(`Unable to place fragment ${scripts[i].args[3]}`, { type: MessageType.error });
 		}
 	}
 }
@@ -578,22 +627,6 @@ export async function main(ns: NS) : Promise<void> {
 
 	if (verbose) logger.setLogLevel(2);
 	if (debug) 	 logger.setLogLevel(3);
-
-	if (hackingSkill) fragmentIdsToPlace.push(0, 1);
-	if (hackingSpeed) fragmentIdsToPlace.push(5);
-	if (hackingPower) fragmentIdsToPlace.push(6);
-	if (growPower) fragmentIdsToPlace.push(7);
-	if (strengthSkill) fragmentIdsToPlace.push(10);
-	if (defenceSkill) fragmentIdsToPlace.push(12);
-	if (dexteritySkill) fragmentIdsToPlace.push(14);
-	if (agilitySkill) fragmentIdsToPlace.push(16);
-	if (charismaSkill) fragmentIdsToPlace.push(18);
-	if (hacknetProduction) fragmentIdsToPlace.push(20);
-	if (hacknetCost) fragmentIdsToPlace.push(21);
-	if (reputationGain) fragmentIdsToPlace.push(25);
-	if (workMoney) fragmentIdsToPlace.push(27);
-	if (crimeMoney) fragmentIdsToPlace.push(28);
-	if (bladeburnerStats) fragmentIdsToPlace.push(30);
 
 	// Helper output
 	if (help) {

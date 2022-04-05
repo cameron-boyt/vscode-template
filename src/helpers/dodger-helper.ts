@@ -1,5 +1,6 @@
 import { NS } from '@ns'
 import { IScriptRun, IScriptRunRequest } from '/data-types/dodger-data';
+import { getFreeRam } from '/helpers/server-helper';
 
 /**
  * [RAM DODGER]
@@ -12,12 +13,24 @@ import { IScriptRun, IScriptRunRequest } from '/data-types/dodger-data';
  */
 export async function runDodgerScript<T>(ns : NS, script : string, ...args : (string | boolean | number)[]) : Promise<T> {
     const uid = generateUID(script);
-    ns.print(`Creating ${uid}`);
-    ns.run(script, 1, uid, ...args);
+    //ns.print(`Creating ${uid}`);
+
+    if (getFreeRam(ns, "home") < ns.getScriptRam(script)) {
+        await ns.asleep(5);
+    }
+
+    const result = ns.run(script, 1, uid, ...args);
+    if (result <= 0) {
+        ns.print("FAIL | Failed catestrophically");
+        ns.tail();
+        ns.print(script);
+        ns.print(uid);
+        ns.print(args);
+    }
 
     const filename = `/tmp/${uid}.txt`;
 
-    while (ns.read(filename) === "") {
+    while (!ns.fileExists(filename)) {
         await ns.asleep(5);
     }
 
@@ -57,10 +70,11 @@ export async function runDodgerScriptBulk(ns : NS, scripts : IScriptRun[]) : Pro
     const runs = generateBulkUIDs(scripts);
 
     for (const s of runs) {
-        if (ns.getServerMaxRam("home") - ns.getServerUsedRam("home") < ns.getScriptRam(s.script)) {
+        if (getFreeRam(ns, "home") < ns.getScriptRam(s.script)) {
             await ns.asleep(5);
         }
-        ns.print(`Creating ${s.uid}`);
+
+        //ns.print(`Creating ${s.uid}`);
         const result = ns.run(s.script, 1, s.uid, ...s.args);
         if (result <= 0) {
             ns.print("FAIL | Failed catestrophically");

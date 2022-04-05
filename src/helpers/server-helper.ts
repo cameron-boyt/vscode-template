@@ -61,3 +61,13 @@ export function getServerPath(ns : NS, start: string, goal : string) : string[] 
 
 	return getPath(goal, start, []);
 }
+
+/**
+ * Get the amount of free RAM a given server has available.
+ * @param ns NS object.
+ * @param hostname Server hostname.
+ * @returns Amount of free RAM on the specified server.
+ */
+export function getFreeRam(ns : NS, hostname : string) : number {
+	return ns.getServerMaxRam(hostname) - ns.getServerUsedRam(hostname)
+}
